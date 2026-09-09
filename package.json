@@ -1,7 +1,7 @@
 {
   "name": "zai-usage",
-  "version": "0.1.0",
-  "description": "Terminal CLI for Z.ai GLM Coding Plan usage — quota, rolling-window model usage, reset packs",
+  "version": "0.2.0",
+  "description": "Terminal CLI for Z.ai GLM Coding Plan usage \u2014 quota, rolling-window model usage, reset packs",
   "type": "module",
   "bin": {
     "zai-usage": "./zai-usage.ts"
@@ -11,6 +11,15 @@
   },
   "license": "MIT",
   "repository": "github:LogicIncZo/zai-usage",
-  "keywords": ["zai", "zhipu", "glm", "coding-plan", "cli", "usage", "quota", "tui"],
+  "keywords": [
+    "zai",
+    "zhipu",
+    "glm",
+    "coding-plan",
+    "cli",
+    "usage",
+    "quota",
+    "tui"
+  ],
   "author": "CashlessConsumer <cashlessconsumerin@gmail.com>"
 }

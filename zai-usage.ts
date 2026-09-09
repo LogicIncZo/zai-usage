@@ -92,10 +92,37 @@ function renderTable(headers: string[], rows: string[][], aligns: string[], sepa
 
 const QUOTA_LABELS: Record<number, string> = { 3: "5-hour quota", 6: "Weekly quota", 5: "Monthly tool calls" };
 
+function inPeakWindow(d = new Date()): boolean {
+  const g = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Shanghai", weekday: "short", hour: "2-digit", hour12: false })
+      .formatToParts(d).map((x) => [x.type, x.value])
+  );
+  const h = +(g.hour === "24" ? "0" : g.hour);
+  return !["Sat", "Sun"].includes(g.weekday) && h >= 14 && h < 18;
+}
+
+function bar(pct: number, width = 20): string {
+  const filled = Math.round((Math.min(100, Math.max(0, pct)) / 100) * width);
+  if (TTY) {
+    const col = pct >= 80 ? "\x1b[31m" : pct >= 50 ? "\x1b[33m" : "\x1b[32m";
+    return `${col}${"█".repeat(filled)}\x1b[0m${dim("░".repeat(width - filled))}`;
+  }
+  return "#".repeat(filled) + "-".repeat(width - filled);
+}
+
+function fiveHourBarLine(limits: any[]): string | null {
+  const l = (limits || []).find((x) => x.unit === 3);
+  if (!l) return null;
+  const peak = inPeakWindow() ? dim(" · ⚠ 3× peak burn (GLM-5.3)") : "";
+  return `${bold("5-HOUR QUOTA")} [${bar(l.percentage)}] ${pctColor(l.percentage, `${String(l.percentage).padStart(3)}%`)} · resets ${resetAt(l.nextResetTime)}${peak}`;
+}
+
 async function getQuota() {
   const body = await api(`${BASE}/quota/limit`);
   if (jsonOut) { console.log(JSON.stringify(body, null, 2)); process.exit(0); }
   console.log(`Plan: ${body.data.level?.toUpperCase() || "unknown"}`);
+  const fhl = fiveHourBarLine(body.data.limits);
+  if (fhl) console.log(fhl);
   for (const l of body.data.limits || []) {
     const label = QUOTA_LABELS[l.unit] || `${l.type} unit=${l.unit}`;
     let line = `${label}: ${l.percentage}% used`;
@@ -192,6 +219,8 @@ async function getSummary() {
   }
 
   console.log(bold(`Z.AI GLM Coding Plan — ${quota.data.level?.toUpperCase() || "?"} · as of ${fmtIST(now.getTime(), false)} IST`));
+  const fhl = fiveHourBarLine(quota.data.limits);
+  if (fhl) console.log(fhl);
   console.log("");
 
   // Model usage matrix: models x windows
