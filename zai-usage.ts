@@ -314,21 +314,30 @@ const WINDOWS: Array<[string, number | "calMonth"]> = [
 
 async function getSummary() {
   const now = new Date();
-  const [quota, resets, ...usages] = await Promise.all([
-    api(`${BASE}/quota/limit`),
+  const quota = await api(`${BASE}/quota/limit`);
+  const five = (quota.data.limits || []).find((x: any) => x.unit === 3);
+  const fiveStart = five?.nextResetTime
+    ? new Date(Math.min(five.nextResetTime - 5 * 3600_000, now.getTime()))
+    : new Date(now.getTime() - 5 * 3600_000);
+  const winDefs: Array<[string, Date]> = [
+    ["5h Quota", fiveStart],
+    ...WINDOWS.map(([label, spec]) => [
+      label,
+      spec === "calMonth" ? startOfMonthUTC8(now) : new Date(now.getTime() - (spec as number) * 3600_000),
+    ] as [string, Date]),
+  ];
+  const [resets, ...usages] = await Promise.all([
     api(RESETS_URL),
-    ...WINDOWS.map(([, spec]) => {
-      const start = spec === "calMonth" ? startOfMonthUTC8(now) : new Date(now.getTime() - spec * 3600_000);
-      return fetchModelUsage(z8Stamp(start), z8Stamp(now));
-    }),
+    ...winDefs.map(([, start]) => fetchModelUsage(z8Stamp(start), z8Stamp(now))),
   ]);
 
   if (jsonOut) {
     console.log(JSON.stringify({
       fetchedAt: now.toISOString(),
+      fiveHourWindow: { start: fiveStart.toISOString(), end: now.toISOString() },
       quota: quota.data,
       resetPacks: resets.data,
-      windows: Object.fromEntries(WINDOWS.map(([label], i) => [label, usages[i]])),
+      windows: Object.fromEntries(winDefs.map(([label], i) => [label, usages[i]])),
     }, null, 2));
     process.exit(0);
   }
@@ -339,26 +348,26 @@ async function getSummary() {
   console.log("");
 
   // Model usage matrix: models x windows
-  console.log(bold("MODEL USAGE") + dim("  (rolling windows + current month, UTC+8 · tokens with % share)"));
+  console.log(bold("MODEL USAGE") + dim("  (5h quota window · rolling windows · current month · UTC+8 · tokens with % share)"));
   const winMaps = usages.map((u) => {
     const list: any[] = u.totalUsage?.modelSummaryList || [];
     const sum = list.reduce((s, m) => s + m.totalTokens, 0);
     return new Map(list.map((m) => [m.modelName, { tok: m.totalTokens, pct: sum ? Math.round((m.totalTokens / sum) * 100) : 0 }]));
   });
-  const monthTok = winMaps[3];
+  const monthTok = winMaps[winDefs.findIndex(([l]) => l === "Month (30d)")];
   const allModels = [...new Set(winMaps.flatMap((m) => [...m.keys()]))]
     .sort((a, b) => (monthTok.get(b)?.tok ?? 0) - (monthTok.get(a)?.tok ?? 0) || a.localeCompare(b));
   const cell = (i: number, name: string) => {
     const mm = winMaps[i].get(name);
     return mm ? `${humanTokens(mm.tok)} ${String(mm.pct).padStart(3)}%` : dim("-");
   };
-  const headers = ["model", ...WINDOWS.map(([l]) => l)];
-  const rows: string[][] = allModels.map((name) => [name, ...WINDOWS.map((_, i) => cell(i, name))]);
+  const headers = ["model", ...winDefs.map(([l]) => l)];
+  const rows: string[][] = allModels.map((name) => [name, ...winDefs.map((_, i) => cell(i, name))]);
   const totalTok = usages.map((u) => humanTokens(u.totalUsage?.totalTokensUsage ?? 0));
   const totalCalls = usages.map((u) => (u.totalUsage?.totalModelCallCount ?? 0).toLocaleString("en-US"));
   rows.push([bold("TOTAL tokens"), ...totalTok]);
   rows.push([bold("TOTAL calls"), ...totalCalls]);
-  const aligns = ["l", "r", "r", "r", "r"];
+  const aligns = ["l", ...winDefs.map(() => "r")];
   const seps = new Set<number>([rows.length - 3, rows.length - 2]);
   console.log(renderTable(headers, rows, aligns, seps));
   console.log("");
