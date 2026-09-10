@@ -1,5 +1,11 @@
 # zai-usage
 
+[![Release](https://img.shields.io/github/v/release/LogicIncZo/zai-usage)](https://github.com/LogicIncZo/zai-usage/releases)
+[![tests](https://github.com/LogicIncZo/zai-usage/actions/workflows/test.yml/badge.svg)](https://github.com/LogicIncZo/zai-usage/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+![Bun](https://img.shields.io/badge/runtime-bun-f472b6?logo=bun)
+![deps](https://img.shields.io/badge/dependencies-zero-brightgreen)
+
 Terminal CLI for the Z.ai GLM Coding Plan: quota windows, rolling-window model usage, and reset-pack inventory — in one colored ASCII view.
 
 ![zai-usage terminal screenshot](docs/screenshot.png)
@@ -45,17 +51,58 @@ zai-usage check                # agent gate: exit 0 = quota OK, 1 = low, 2 = err
   Override per run with `--tz <IANA zone>` or persistently via the standard `TZ`
   environment variable. The summary header shows which zone is in effect.
 
-### Agent integration
+## Agent-first use cases
 
-Built to be scripted by AI agents and cron jobs:
+Built for machines first: keyless `--help` / `--version`, `--json` in every mode,
+deterministic exit codes, zero interactive prompts, and a demo mode so an agent can
+self-verify a fresh install with no credentials.
 
-- `zai-usage check` is a gate: exit **0** when the 5-hour window has ≥ 10% left, **1** when low, **2** on error — so `zai-usage check && run-heavy-job` just works.
-  ```bash
-  zai-usage check --window monthly-tools --min 20   # gate on MCP tool calls instead
-  zai-usage check --json                            # {ok, left, used, resetsInMin}
-  ```
-- `--json` gives structured output in every mode; `--demo` lets an agent self-test with no API key.
-- `--help` / `--version` work without a key; no interactive prompts anywhere; errors go to stderr with non-zero exits.
+**`check` exit codes:** `0` = quota OK (left ≥ `--min`%), `1` = low, `2` = error or window not reported.
+
+**1. Gate heavy agent runs on the 5-hour window**
+
+```bash
+zai-usage check --min 25 && run-the-expensive-thing
+```
+
+**2. Wait for reset instead of failing**
+
+```bash
+while ! zai-usage check --min 30; do
+  sleep $(( $(zai-usage check --json --window 5h | jq -r .resetsInMin) * 60 ))
+done
+```
+
+**3. Budget MCP tool calls separately**
+
+`search-prime` / `web-reader` / `zread` calls live in their own monthly window:
+
+```bash
+zai-usage check --window monthly-tools --min 20 || use-local-tools
+```
+
+**4. Session-start budget brief (Claude Code / OpenCode hooks)**
+
+```json
+{ "hooks": { "SessionStart": [{ "command": "zai-usage summary" }] } }
+```
+
+The agent sees its own remaining budget before its first tool call.
+
+**5. Keyless self-test for fresh installs**
+
+```bash
+zai-usage --demo --json      # full pipeline on synthetic fixtures, no key
+zai-usage --help             # discover the surface
+```
+
+**6. Snapshots for dashboards and trend logs**
+
+```bash
+*/15 * * * * zai-usage summary --json >> ~/zai-usage-log.jsonl
+```
+
+Every mode emits one JSON document — trivial to append, chart, or feed to DuckDB.
 
 ### Tests
 
