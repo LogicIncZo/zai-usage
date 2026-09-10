@@ -14,6 +14,8 @@ curl -fsSL https://raw.githubusercontent.com/LogicIncZo/zai-usage/main/install.s
 
 This drops the script into `~/.local/bin/zai-usage` (with a `#!/usr/bin/env bun` shebang). Requires [bun](https://bun.sh) and `ZAI_API_KEY` (or `Z_AI_API_KEY` / `GLM_API_KEY`) in your environment.
 
+No plan yet? Subscribe to the GLM Coding Plan via [my referral link](https://z.ai/subscribe?ic=5CA0GFZ4CO) — starts at $18/month.
+
 Manual install:
 
 ```bash
@@ -93,6 +95,12 @@ Auth: `Authorization: Bearer <api-key>` — the same key Z.ai issues for the GLM
 - Granularity is auto: spans ≤ 48 h return hourly buckets, longer spans daily.
 - `granularity` and bucket labels are server-controlled; the CLI infers bucket width from the span.
 - The 5-hour window is a rolling quota, not a fixed window; reset packs add manual resets.
+
+## Get the GLM Coding Plan
+
+🚀 Full support for Claude Code, Cline, and 20+ top coding tools, starting at $18/month. Subscribe via referral link: **[z.ai/subscribe?ic=5CA0GFZ4CO](https://z.ai/subscribe?ic=5CA0GFZ4CO)**
+
+(Yes, that's a referral link — it supports the project.)
 
 ## License
 
