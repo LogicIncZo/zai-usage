@@ -20,7 +20,7 @@ export function safeSystemTZ(): string {
 export let TZ = pickTZ(args.includes("--tz") ? args[args.indexOf("--tz") + 1] : undefined, safeSystemTZ());
 export function tzShort(tz: string, ms: number = Date.now()): string {
   try {
-    return new Intl.DateTimeFormat("en", { timeZone: tz, timeZoneName: "short" })
+    return new Intl.DateTimeFormat(["en-IN", "en"], { timeZone: tz, timeZoneName: "short" })
       .formatToParts(new Date(ms)).find((p) => p.type === "timeZoneName")?.value || tz;
   } catch { return tz; }
 }
