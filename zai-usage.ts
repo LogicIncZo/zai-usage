@@ -1,16 +1,29 @@
 #!/usr/bin/env bun
 const KEY = process.env.GLM_API_KEY || process.env.ZAI_API_KEY || process.env.Z_AI_API_KEY;
 
-if (!KEY) {
-  console.error("No API key found. Set GLM_API_KEY (Settings > Advanced).");
-  process.exit(1);
-}
-
 const BASE = "https://api.z.ai/api/monitor/usage";
 const RESETS_URL = "https://api.z.ai/api/biz/customer-package-reset/list?targetType=PERSONAL";
 const args = process.argv.slice(2);
 const jsonOut = args.includes("--json");
 const DEMO = args.includes("--demo");
+
+// Display timezone: --tz <IANA zone> wins, else system local, else UTC.
+// (The Z.ai API itself always speaks UTC+8 — that is protocol, not presentation.)
+export function pickTZ(flag: string | undefined, system: string | undefined): string {
+  const cand = flag || system || "UTC";
+  try { new Intl.DateTimeFormat("en", { timeZone: cand }); return cand; }
+  catch { return "UTC"; }
+}
+export function safeSystemTZ(): string {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch { return "UTC"; }
+}
+export let TZ = pickTZ(args.includes("--tz") ? args[args.indexOf("--tz") + 1] : undefined, safeSystemTZ());
+export function tzShort(tz: string, ms: number = Date.now()): string {
+  try {
+    return new Intl.DateTimeFormat("en", { timeZone: tz, timeZoneName: "short" })
+      .formatToParts(new Date(ms)).find((p) => p.type === "timeZoneName")?.value || tz;
+  } catch { return tz; }
+}
 
 // --demo: bundled synthetic payloads, frozen clock (Fri 12 Sept 2026, 14:47 IST = peak window).
 // No API key needed; all data is fake.
@@ -26,7 +39,7 @@ if (DEMO) {
 
 const r3 = (n: number) => Number(n.toPrecision(3));
 
-function demoQuota(): any {
+export function demoQuota(): any {
   return {
     code: 200, msg: "Operation successful", success: true,
     data: {
@@ -41,7 +54,7 @@ function demoQuota(): any {
   };
 }
 
-function demoResets(): any {
+export function demoResets(): any {
   return {
     code: 200, success: true,
     data: {
@@ -66,7 +79,7 @@ const DEMO_RATES: Array<[string, number, number]> = [
   ["GLM-5.2", 4.0e7, 8], ["GLM-4.7", 6.0e6, 2],
 ];
 
-function demoModelUsage(from: string, to: string): any {
+export function demoModelUsage(from: string, to: string): any {
   const spanMs = new Date(to.replace(" ", "T") + "+08:00").getTime() - new Date(from.replace(" ", "T") + "+08:00").getTime();
   const days = Math.max(spanMs / 86_400_000, 1 / 60);
   const list = DEMO_RATES.map(([name, tpd, cpd], i) => {
@@ -123,16 +136,19 @@ async function api(url: string): Promise<any> {
   return body;
 }
 
-function fmtIST(ms: number, weekday = true): string {
+export function fmtWhen(ms: number, tz: string, weekday = true): string {
   return new Intl.DateTimeFormat("en-IN", {
-    timeZone: "Asia/Kolkata",
+    timeZone: tz,
     ...(weekday ? { weekday: "short" } : {}),
     day: "2-digit", month: "short",
     hour: "2-digit", minute: "2-digit", hour12: false,
   }).format(new Date(ms));
 }
+function fmtIST(ms: number, weekday = true): string {
+  return fmtWhen(ms, TZ, weekday);
+}
 
-function rel(ms: number): string {
+export function rel(ms: number): string {
   const mins = Math.round((ms - Date.now()) / 60000);
   const a = Math.abs(mins);
   const span =
@@ -143,17 +159,17 @@ function rel(ms: number): string {
 }
 
 function resetAt(ms: number): string {
-  return `${fmtIST(ms)} IST (${rel(ms)})`;
+  return `${fmtIST(ms)} ${tzShort(TZ, ms)} (${rel(ms)})`;
 }
 
-function humanTokens(n: number): string {
+export function humanTokens(n: number): string {
   if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
   if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
   if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
   return String(n);
 }
 
-function z8Stamp(d: Date): string {
+export function z8Stamp(d: Date): string {
   const p = (n: number) => String(n).padStart(2, "0");
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
@@ -164,11 +180,11 @@ function z8Stamp(d: Date): string {
   return `${g.year}-${g.month}-${g.day} ${hh}:${g.minute}:${g.second}`;
 }
 
-function parseZ8(s: string): Date {
+export function parseZ8(s: string): Date {
   return new Date(s.replace(" ", "T") + "+08:00");
 }
 
-function renderTable(headers: string[], rows: string[][], aligns: string[], separators: Set<number> = new Set()): string {
+export function renderTable(headers: string[], rows: string[][], aligns: string[], separators: Set<number> = new Set()): string {
   const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
   const widths = headers.map((h, i) => Math.max(strip(h).length, ...rows.map((r) => strip(r[i] ?? "").length)));
   const rule = (l: string, m: string, r: string) => l + widths.map((w) => "-".repeat(w + 2)).join(m) + r;
@@ -189,7 +205,7 @@ function renderTable(headers: string[], rows: string[][], aligns: string[], sepa
 
 const QUOTA_LABELS: Record<number, string> = { 3: "5-hour quota", 6: "Weekly quota", 5: "Monthly tool calls" };
 
-function inPeakWindow(d = new Date()): boolean {
+export function inPeakWindow(d = new Date()): boolean {
   const g = Object.fromEntries(
     new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Shanghai", weekday: "short", hour: "2-digit", hour12: false })
       .formatToParts(d).map((x) => [x.type, x.value])
@@ -198,7 +214,7 @@ function inPeakWindow(d = new Date()): boolean {
   return !["Sat", "Sun"].includes(g.weekday) && h >= 14 && h < 18;
 }
 
-function bar(pct: number, width = 20): string {
+export function bar(pct: number, width = 20): string {
   const filled = Math.round((Math.min(100, Math.max(0, pct)) / 100) * width);
   if (TTY) {
     const col = pct >= 80 ? "\x1b[31m" : pct >= 50 ? "\x1b[33m" : "\x1b[32m";
@@ -279,7 +295,7 @@ async function getModelUsage() {
   }
 }
 
-function startOfMonthUTC8(now: Date): Date {
+export function startOfMonthUTC8(now: Date): Date {
   const g = Object.fromEntries(
     new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit" })
       .formatToParts(now).map((x) => [x.type, x.value])
@@ -316,7 +332,7 @@ async function getSummary() {
     process.exit(0);
   }
 
-  console.log(bold(`Z.AI GLM Coding Plan — ${quota.data.level?.toUpperCase() || "?"} · as of ${fmtIST(now.getTime(), false)} IST`));
+  console.log(bold(`Z.AI GLM Coding Plan — ${quota.data.level?.toUpperCase() || "?"} · as of ${fmtIST(now.getTime(), false)} ${tzShort(TZ, now.getTime())}`));
   const fhl = fiveHourBarLine(quota.data.limits);
   if (fhl) console.log(fhl);
   console.log("");
@@ -367,7 +383,7 @@ async function getSummary() {
     const expired = (list || []).filter((r) => !r.available);
     const next = avail.sort((a, b) => parseZ8(a.expireTime).getTime() - parseZ8(b.expireTime).getTime())[0];
     let s = `${avail.length} available`;
-    if (next) s += ` · nearest expiry ${fmtIST(parseZ8(next.expireTime).getTime(), false)} IST (${rel(parseZ8(next.expireTime).getTime())})`;
+    if (next) s += ` · nearest expiry ${fmtIST(parseZ8(next.expireTime).getTime(), false)} ${tzShort(TZ, parseZ8(next.expireTime).getTime())} (${rel(parseZ8(next.expireTime).getTime())})`;
     if (expired.length) s += dim(` · ${expired.length} used/expired`);
     return s;
   };
@@ -375,17 +391,27 @@ async function getSummary() {
   console.log(`  5-hour resets:  ${fmtPack(rd.fiveHourResets)}`);
   console.log(`  weekly resets:  ${fmtPack(rd.weekResets)}`);
   const last5 = rd.lastFiveHourResetTime ? parseZ8(rd.lastFiveHourResetTime) : null;
-  if (last5) console.log(dim(`  last 5h auto-reset: ${fmtIST(last5.getTime(), false)} IST (${rel(last5.getTime())})`));
+  if (last5) console.log(dim(`  last 5h auto-reset: ${fmtIST(last5.getTime(), false)} ${tzShort(TZ, last5.getTime())} (${rel(last5.getTime())})`));
   if (rd.lastWeekResetTime) {
     const lw = parseZ8(rd.lastWeekResetTime);
-    console.log(dim(`  last weekly auto-reset: ${fmtIST(lw.getTime(), false)} IST (${rel(lw.getTime())})`));
+    console.log(dim(`  last weekly auto-reset: ${fmtIST(lw.getTime(), false)} ${tzShort(TZ, lw.getTime())} (${rel(lw.getTime())})`));
   }
 }
 
-if (args[0] === "summary" || args.includes("--summary")) {
-  await getSummary();
-} else if (args[0] === "usage" || args.includes("--usage")) {
-  await getModelUsage();
-} else {
-  await getQuota();
+export async function main() {
+  if (!KEY && !DEMO) {
+    console.error("No API key found. Set GLM_API_KEY (Settings > Advanced), or use --demo for a keyless tour.");
+    process.exit(1);
+  }
+  if (args[0] === "summary" || args.includes("--summary")) {
+    await getSummary();
+  } else if (args[0] === "usage" || args.includes("--usage")) {
+    await getModelUsage();
+  } else {
+    await getQuota();
+  }
+}
+
+if (import.meta.main) {
+  await main();
 }

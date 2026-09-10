@@ -34,6 +34,21 @@ zai-usage usage --from "2026-09-01 00:00:00" --to "2026-09-10 23:59:59"
 zai-usage --json              # machine-readable (any mode)
 zai-usage --demo              # synthetic data, no API key needed (any mode)
 zai-usage --color             # force ANSI color even when piped
+zai-usage --tz America/New_York  # display resets in any IANA zone
+
+### Times & timezones
+
+- **API side (fixed):** the Z.ai monitor API interprets request ranges and bucket
+  labels in **Asia/Shanghai (UTC+8)**. The CLI keeps bucket labels in UTC+8 and says so.
+- **Display side (yours):** reset times render in your system timezone by default.
+  Override per run with `--tz <IANA zone>` or persistently via the standard `TZ`
+  environment variable. The summary header shows which zone is in effect.
+
+### Tests
+
+```bash
+bun test        # 18 unit tests — no API key needed (pure functions + demo fixtures)
+```
 ```
 
 ### Example output (synthetic data)
@@ -90,7 +105,7 @@ Auth: `Authorization: Bearer <api-key>` — the same key Z.ai issues for the GLM
 
 ## Quirks
 
-- Timestamps are **Asia/Shanghai (UTC+8)**, not UTC. The CLI labels its outputs IST.
+- Request timestamps and bucket labels are **Asia/Shanghai (UTC+8)**, not UTC. Reset times display in your local timezone (`TZ` / `--tz`).
 - `model-usage` rejects spans longer than **31 days** — chunk longer ranges yourself.
 - Granularity is auto: spans ≤ 48 h return hourly buckets, longer spans daily.
 - `granularity` and bucket labels are server-controlled; the CLI infers bucket width from the span.
