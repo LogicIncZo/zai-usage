@@ -3,7 +3,7 @@ const KEY = process.env.GLM_API_KEY || process.env.ZAI_API_KEY || process.env.Z_
 
 const BASE = "https://api.z.ai/api/monitor/usage";
 const RESETS_URL = "https://api.z.ai/api/biz/customer-package-reset/list?targetType=PERSONAL";
-export const VERSION = "0.3.0";
+export const VERSION = "0.3.1";
 const args = process.argv.slice(2);
 const jsonOut = args.includes("--json");
 const DEMO = args.includes("--demo");
