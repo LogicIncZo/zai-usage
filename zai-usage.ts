@@ -3,6 +3,7 @@ const KEY = process.env.GLM_API_KEY || process.env.ZAI_API_KEY || process.env.Z_
 
 const BASE = "https://api.z.ai/api/monitor/usage";
 const RESETS_URL = "https://api.z.ai/api/biz/customer-package-reset/list?targetType=PERSONAL";
+export const VERSION = "0.3.0";
 const args = process.argv.slice(2);
 const jsonOut = args.includes("--json");
 const DEMO = args.includes("--demo");
@@ -398,7 +399,69 @@ async function getSummary() {
   }
 }
 
+export function printHelp(): void {
+  console.log(`zai-usage ${VERSION} — Z.ai GLM Coding Plan usage CLI
+
+Usage: zai-usage [mode] [flags]
+
+Modes:
+  (default)            quota: 5-hour progress bar + monthly tool calls, reset times
+  summary              model usage matrix + quota + reset packs
+  usage [YYYY-MM-DD]   hour-by-hour model usage (default: today, UTC+8)
+  usage --from "..." --to "..."   arbitrary range (max 31 days)
+  check                agent gate: exit 0 if quota left >= --min%, 1 if low, 2 if error
+
+Flags:
+  --json               machine-readable output (any mode)
+  --demo               synthetic fixtures, no API key needed (any mode)
+  --color              force ANSI color even when piped
+  --tz <IANA zone>     display timezone (default: system local, or TZ env)
+  --window <name>      check window: 5h | monthly-tools | weekly (default: 5h)
+  --min <pct>          check threshold, percent left required (default: 10)
+  --version            print version
+  --help               this text
+
+Key: GLM_API_KEY (or ZAI_API_KEY / Z_AI_API_KEY) environment variable.
+API protocol times are UTC+8; display times follow --tz / TZ.
+Repo: https://github.com/LogicIncZo/zai-usage`);
+}
+
+export const CHECK_WINDOWS: Record<string, number> = { "5h": 3, "monthly-tools": 5, "weekly": 6 };
+
+export function checkDecision(limits: any[], window: string, minPctLeft: number) {
+  const unit = CHECK_WINDOWS[window] ?? 3;
+  const l = (limits || []).find((x) => x.unit === unit);
+  if (!l) return { ok: false, missing: true, window, left: 0, used: 0, callsLeft: undefined as number | undefined, nextResetTime: undefined as number | undefined };
+  const left = Math.max(0, 100 - (l.percentage ?? 0));
+  return { ok: left >= minPctLeft, missing: false, window, left, used: l.percentage ?? 0, callsLeft: l.remaining as number | undefined, nextResetTime: l.nextResetTime as number | undefined };
+}
+
+async function runCheck() {
+  const winIdx = args.indexOf("--window");
+  const window = winIdx > -1 ? args[winIdx + 1] : "5h";
+  const minIdx = args.indexOf("--min");
+  const min = minIdx > -1 ? Number(args[minIdx + 1]) : 10;
+  const body = await api(`${BASE}/quota/limit`);
+  const d = checkDecision(body.data.limits || [], window, Number.isFinite(min) ? min : 10);
+  if (jsonOut) {
+    console.log(JSON.stringify({
+      ok: d.ok, missing: d.missing, window: d.window, used: d.used, left: d.left,
+      callsLeft: d.callsLeft ?? null,
+      resetsInMin: d.nextResetTime ? Math.round((d.nextResetTime - Date.now()) / 60_000) : null,
+    }, null, 2));
+  } else if (d.missing) {
+    console.log(`UNKNOWN ${d.window}: window not reported by API`);
+  } else {
+    const detail = window === "monthly-tools" ? `${d.callsLeft} calls left` : `resets ${resetAt(d.nextResetTime!)}`;
+    console.log(`${d.ok ? "OK" : "LOW"} ${d.window}: ${d.left}% left (${detail})`);
+  }
+  if (d.missing) process.exit(2);
+  process.exit(d.ok ? 0 : 1);
+}
+
 export async function main() {
+  if (args.includes("--help") || args.includes("-h")) { printHelp(); return; }
+  if (args.includes("--version") || args.includes("-v")) { console.log(VERSION); return; }
   if (!KEY && !DEMO) {
     console.error("No API key found. Set GLM_API_KEY (Settings > Advanced), or use --demo for a keyless tour.");
     process.exit(1);
@@ -407,6 +470,8 @@ export async function main() {
     await getSummary();
   } else if (args[0] === "usage" || args.includes("--usage")) {
     await getModelUsage();
+  } else if (args[0] === "check") {
+    await runCheck();
   } else {
     await getQuota();
   }

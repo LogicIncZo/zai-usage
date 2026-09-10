@@ -35,6 +35,7 @@ zai-usage --json              # machine-readable (any mode)
 zai-usage --demo              # synthetic data, no API key needed (any mode)
 zai-usage --color             # force ANSI color even when piped
 zai-usage --tz America/New_York  # display resets in any IANA zone
+zai-usage check                # agent gate: exit 0 = quota OK, 1 = low, 2 = error
 
 ### Times & timezones
 
@@ -43,6 +44,18 @@ zai-usage --tz America/New_York  # display resets in any IANA zone
 - **Display side (yours):** reset times render in your system timezone by default.
   Override per run with `--tz <IANA zone>` or persistently via the standard `TZ`
   environment variable. The summary header shows which zone is in effect.
+
+### Agent integration
+
+Built to be scripted by AI agents and cron jobs:
+
+- `zai-usage check` is a gate: exit **0** when the 5-hour window has ≥ 10% left, **1** when low, **2** on error — so `zai-usage check && run-heavy-job` just works.
+  ```bash
+  zai-usage check --window monthly-tools --min 20   # gate on MCP tool calls instead
+  zai-usage check --json                            # {ok, left, used, resetsInMin}
+  ```
+- `--json` gives structured output in every mode; `--demo` lets an agent self-test with no API key.
+- `--help` / `--version` work without a key; no interactive prompts anywhere; errors go to stderr with non-zero exits.
 
 ### Tests
 

@@ -1,8 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import {
   humanTokens, bar, z8Stamp, parseZ8, startOfMonthUTC8, inPeakWindow,
-  fmtWhen, tzShort, pickTZ, renderTable, demoQuota, demoResets, demoModelUsage,
-} from "./zai-usage.ts";
+  fmtWhen, tzShort, pickTZ, renderTable, demoQuota, demoResets, demoModelUsage, checkDecision } from "./zai-usage.ts";
 
 describe("humanTokens", () => {
   test("formats by magnitude", () => {
@@ -139,5 +138,33 @@ describe("demo fixtures", () => {
     expect(d.totalUsage.totalTokensUsage).toBeGreaterThan(0);
     expect(d.modelSummaryList.length).toBeGreaterThan(0);
     expect(d.modelSummaryList[0].totalTokens).toBeGreaterThan(0);
+  });
+});
+
+describe("checkDecision", () => {
+  const limits = demoQuota().data.limits;
+  test("ok when left >= min", () => {
+    const d = checkDecision(limits, "5h", 10);
+    expect(d.ok).toBe(true);
+    expect(d.left).toBe(53);
+  });
+  test("low when left < min", () => {
+    expect(checkDecision(limits, "5h", 60).ok).toBe(false);
+  });
+  test("boundary: left == min passes", () => {
+    expect(checkDecision(limits, "5h", 53).ok).toBe(true);
+  });
+  test("monthly-tools uses unit 5 and exposes callsLeft", () => {
+    const d = checkDecision(limits, "monthly-tools", 10);
+    expect(d.left).toBe(62);
+    expect(d.callsLeft).toBe(62);
+  });
+  test("missing window reports missing", () => {
+    const d = checkDecision(limits, "weekly", 10);
+    expect(d.missing).toBe(true);
+    expect(d.ok).toBe(false);
+  });
+  test("unknown window falls back to 5h", () => {
+    expect(checkDecision(limits, "bogus", 10).left).toBe(53);
   });
 });
