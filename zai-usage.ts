@@ -10,13 +10,110 @@ const BASE = "https://api.z.ai/api/monitor/usage";
 const RESETS_URL = "https://api.z.ai/api/biz/customer-package-reset/list?targetType=PERSONAL";
 const args = process.argv.slice(2);
 const jsonOut = args.includes("--json");
-const TTY = process.stdout.isTTY;
+const DEMO = args.includes("--demo");
+
+// --demo: bundled synthetic payloads, frozen clock (Fri 12 Sept 2026, 14:47 IST = peak window).
+// No API key needed; all data is fake.
+const DEMO_NOW = new Date("2026-09-12T14:47:00+05:30").getTime();
+if (DEMO) {
+  const RealDate = Date;
+  // @ts-ignore — freeze both Date.now() and new Date() at DEMO_NOW
+  globalThis.Date = class extends RealDate {
+    constructor(...a: any[]) { a.length === 0 ? super(DEMO_NOW) : super(...(a as [])); }
+    static now() { return DEMO_NOW; }
+  } as any;
+}
+
+const r3 = (n: number) => Number(n.toPrecision(3));
+
+function demoQuota(): any {
+  return {
+    code: 200, msg: "Operation successful", success: true,
+    data: {
+      level: "PRO",
+      limits: [
+        { unit: 3, type: "TOKENS_LIMIT", percentage: 47, nextResetTime: DEMO_NOW + 133 * 60_000 },
+        { unit: 5, type: "TIME_LIMIT", percentage: 38, currentValue: 38, usage: 100, remaining: 62,
+          usageDetails: [{ modelCode: "search-prime", usage: 31 }, { modelCode: "web-reader", usage: 5 }, { modelCode: "zread", usage: 2 }],
+          nextResetTime: DEMO_NOW + 16 * 86_400_000 + 18 * 3_600_000 + 27 * 60_000 },
+      ],
+    },
+  };
+}
+
+function demoResets(): any {
+  return {
+    code: 200, success: true,
+    data: {
+      customerId: 41002358991004410, targetType: "PERSONAL", organizationId: null, projectId: null,
+      lastFiveHourResetTime: "2026-09-11 06:02:16", lastWeekResetTime: null,
+      fiveHourResets: [
+        { recordId: 910001, expireTime: "2026-10-18 23:59:59", available: false },
+        { recordId: 910002, expireTime: "2026-11-07 23:59:59", available: true },
+        { recordId: 910003, expireTime: "2026-11-07 23:59:59", available: true },
+        { recordId: 910004, expireTime: "2026-11-07 23:59:59", available: true },
+      ],
+      weekResets: [
+        { recordId: 920001, expireTime: "2026-11-07 23:59:59", available: true },
+        { recordId: 920002, expireTime: "2026-11-07 23:59:59", available: true },
+      ],
+    },
+  };
+}
+
+const DEMO_RATES: Array<[string, number, number]> = [
+  ["GLM-5.3-Flash", 1.47e9, 780], ["GLM-5-Turbo", 2.2e8, 60], ["GLM-5.3", 1.5e8, 25],
+  ["GLM-5.2", 4.0e7, 8], ["GLM-4.7", 6.0e6, 2],
+];
+
+function demoModelUsage(from: string, to: string): any {
+  const spanMs = new Date(to.replace(" ", "T") + "+08:00").getTime() - new Date(from.replace(" ", "T") + "+08:00").getTime();
+  const days = Math.max(spanMs / 86_400_000, 1 / 60);
+  const list = DEMO_RATES.map(([name, tpd, cpd], i) => {
+    const f = 0.75 + 0.5 * (((i * 3 + Math.round(days * 17)) % 7) / 6);
+    return {
+      modelName: name, sortOrder: i + 1,
+      totalTokens: r3(tpd * days * f),
+      calls: Math.max(1, Math.round(cpd * days * f)),
+    };
+  });
+  const hourly = days <= 8;
+  const step = hourly ? 3_600_000 : 86_400_000;
+  const t0 = new Date(from.replace(" ", "T") + "+08:00").getTime();
+  const xTime: string[] = [], tokens: number[] = [], calls: number[] = [];
+  for (let t = t0; t < t0 + spanMs; t += step) {
+    const d = new Date(t + 8 * 3_600_000).toISOString().slice(0, hourly ? 13 : 10).replace("T", " ");
+    xTime.push(hourly ? d + ":00" : d);
+    tokens.push(r3(1.9e9 / (hourly ? 24 : 1) * (0.8 + 0.4 * ((t / step) % 7) / 6)));
+    calls.push(Math.round(860 / (hourly ? 24 : 1) * (0.8 + 0.4 * ((t / step) % 7) / 6)));
+  }
+  return {
+    code: 200, success: true,
+    data: {
+      x_time: xTime, modelCallCount: calls, tokensUsage: tokens,
+      totalUsage: {
+        totalModelCallCount: list.reduce((s, m) => s + m.calls, 0),
+        totalTokensUsage: r3(list.reduce((s, m) => s + m.totalTokens, 0) * 0.96),
+        modelSummaryList: list.map(({ modelName, totalTokens, sortOrder }) => ({ modelName, totalTokens, sortOrder })),
+      },
+      modelDataList: list.map((m) => ({ modelName: m.modelName, sortOrder: m.sortOrder, tokensUsage: tokens, totalTokens: m.totalTokens })),
+      modelSummaryList: list.map(({ modelName, totalTokens, sortOrder }) => ({ modelName, totalTokens, sortOrder })),
+      granularity: hourly ? "hourly" : "daily",
+    },
+  };
+}
+const TTY = process.stdout.isTTY || args.includes("--color");
 const c = (code: string, s: string) => (TTY ? `\x1b[${code}m${s}\x1b[0m` : s);
 const bold = (s: string) => c("1", s);
 const dim = (s: string) => c("2", s);
 const pctColor = (p: number, s: string) => c(p >= 80 ? "31" : p >= 50 ? "33" : "32", s);
 
 async function api(url: string): Promise<any> {
+  if (DEMO) {
+    if (url.includes("/quota/limit")) return demoQuota();
+    if (url.includes("customer-package-reset")) return demoResets();
+    return { code: 200, success: true, data: {} };
+  }
   const res = await fetch(url, { headers: { Authorization: `Bearer ${KEY}` } });
   const body = await res.json();
   if (!body.success) {
@@ -144,6 +241,7 @@ function z8Date(d = new Date()): string {
 }
 
 async function fetchModelUsage(from: string, to: string): Promise<any> {
+  if (DEMO) return demoModelUsage(from, to).data;
   const url = `${BASE}/model-usage?startTime=${encodeURIComponent(from).replace(/%20/g, "+")}&endTime=${encodeURIComponent(to).replace(/%20/g, "+")}`;
   return (await api(url)).data;
 }
