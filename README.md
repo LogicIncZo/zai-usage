@@ -12,11 +12,11 @@ Single-file Bun/TypeScript, zero dependencies. Talks to three undocumented Z.ai 
 curl -fsSL https://raw.githubusercontent.com/LogicIncZo/zai-usage/main/install.sh | bash
 ```
 
-This drops the script into `~/.local/bin/zai-usage` (with a `#!/usr/bin/env bun` shebang). Requires [bun](https://bun.sh) and `ZAI_API_KEY` (or `Z_AI_API_KEY` / `GLM_API_KEY`) in your environment.
+The installer drops the script into `~/.local/bin/zai-usage` and adds that to `PATH` in `~/.bashrc` if missing. Requires [bun](https://bun.sh) and `ZAI_API_KEY` (or `Z_AI_API_KEY` / `GLM_API_KEY`) in your environment.
 
 No plan yet? Subscribe to the GLM Coding Plan via [my referral link](https://z.ai/subscribe?ic=5CA0GFZ4CO) — starts at $18/month.
 
-Manual install:
+Manual install — grab the single file yourself:
 
 ```bash
 curl -fsSL -o ~/.local/bin/zai-usage https://raw.githubusercontent.com/LogicIncZo/zai-usage/main/zai-usage.ts
