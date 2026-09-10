@@ -1,5 +1,6 @@
 # zai-usage
 
+[![npm](https://img.shields.io/npm/v/zai-usage)](https://www.npmjs.com/package/zai-usage)
 [![Release](https://img.shields.io/github/v/release/LogicIncZo/zai-usage)](https://github.com/LogicIncZo/zai-usage/releases)
 [![tests](https://github.com/LogicIncZo/zai-usage/actions/workflows/test.yml/badge.svg)](https://github.com/LogicIncZo/zai-usage/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -15,6 +16,11 @@ Single-file Bun/TypeScript, zero dependencies. Talks to three undocumented Z.ai 
 ## Install
 
 ```bash
+# npm / bun
+bunx zai-usage            # run without installing
+npm i -g zai-usage       # or install globally
+
+# curl one-liner
 curl -fsSL https://raw.githubusercontent.com/LogicIncZo/zai-usage/main/install.sh | bash
 ```
 
