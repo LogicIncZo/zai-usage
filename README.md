@@ -190,6 +190,15 @@ zai-usage --help             # discover the surface
 
 Every mode emits one JSON document — trivial to append, chart, or feed to DuckDB.
 
+**7. Nightly billing snapshot for cost dashboards**
+
+```bash
+0 23 * * * zai-usage bill --json >> ~/zai-billing-log.jsonl
+```
+
+Each ledger row carries the full cost decomposition (list price, cash, credits, gift,
+plan deduction) — chart real spend and "what this would cost retail" side by side.
+
 ### Tests
 
 ```bash
