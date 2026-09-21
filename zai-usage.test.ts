@@ -3,6 +3,7 @@ import {
   humanTokens, bar, z8Stamp, parseZ8, startOfMonthUTC8, inPeakWindow,
   fmtWhen, tzShort, pickTZ, renderTable, demoQuota, demoResets, demoModelUsage, checkDecision,
   billCustomerId, extractCustomerId, prevPeriod, nextPeriod, billInsights, benefitsSummary, rowListCost, demoBillRows,
+  demoRowsScaled, learnPrices,
   z8Day, spansFor, describePeriod, buildTips, demoRowsScaled } from "./zai-usage.ts";
 
 describe("humanTokens", () => {
@@ -369,5 +370,40 @@ describe("describePeriod + buildTips", () => {
     const scaled = demoRowsScaled("2026-09", 0.5);
     expect(scaled.length).toBe(base.length);
     expect(Number(scaled[0].usageCount)).toBe(Math.round(Number(base[0].usageCount) * 0.5));
+  });
+});
+
+describe("v0.8 additions", () => {
+  test("demoRowsScaled scales costs and keeps dates", () => {
+    const rows = demoRowsScaled("2026-08", 0.5);
+    const orig = demoBillRows("2026-08");
+    expect(rows.length).toBe(orig.length);
+    expect(billInsights(rows, "2026-08").listSpend).toBeCloseTo(billInsights(orig, "2026-08").listSpend * 0.5, 5);
+    expect(rows.every((r: any) => r.billingDate.startsWith("2026-08"))).toBe(true);
+  });
+
+  test("learnPrices last-seen wins per model+tokenType", () => {
+    const prices = learnPrices([
+      { modelCode: "glm-5.3", tokenType: "INPUT", usageUnit: "token", costUnit: "kToken", usageCount: 1000, costPrice: "0.001", billingDate: "2026-07-01" },
+      { modelCode: "glm-5.3", tokenType: "INPUT", usageUnit: "token", costUnit: "kToken", usageCount: 1000, costPrice: "0.002", billingDate: "2026-08-01" },
+    ]);
+    expect(prices.length).toBe(1);
+    expect(prices[0].price).toBe(0.002); // raw per-kToken; display layer ×1000 → $2/1M
+    expect(prices[0].model).toBe("glm-5.3");
+  });
+
+  test("spansFor month: MTD window vs same span prior month", () => {
+    const sp = spansFor("month");
+    const curDays = Number(sp.curTo.slice(8)) - Number(sp.curFrom.slice(8)) + 1;
+    const prevEnd = new Date(Date.UTC(+sp.prevTo.slice(0, 4), +sp.prevTo.slice(5, 7), 0)).getUTCDate();
+    expect(curDays).toBeGreaterThanOrEqual(1);
+    expect(sp.prevFrom.slice(0, 7) < sp.curFrom.slice(0, 7)).toBe(true);
+    expect(Number(sp.prevTo.slice(8))).toBeLessThanOrEqual(prevEnd);
+  });
+
+  test("benefitsSummary with single month has no best-month flag", () => {
+    const one = benefitsSummary([{ period: "2026-09", insights: billInsights(demoBillRows("2026-09"), "2026-09") }]);
+    expect(one.months).toBe(1);
+    expect(one.bestMonth?.period).toBe("2026-09");
   });
 });

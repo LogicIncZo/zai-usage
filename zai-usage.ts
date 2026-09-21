@@ -1,12 +1,19 @@
 #!/usr/bin/env bun
+import { writeFileSync } from "node:fs";
 const KEY = process.env.GLM_API_KEY || process.env.ZAI_API_KEY || process.env.Z_AI_API_KEY;
 
 const BASE = "https://api.z.ai/api/monitor/usage";
 const RESETS_URL = "https://api.z.ai/api/biz/customer-package-reset/list?targetType=PERSONAL";
-export const VERSION = "0.7.0";
+export const VERSION = "0.8.0";
 const args = process.argv.slice(2);
 const jsonOut = args.includes("--json");
 const DEMO = args.includes("--demo");
+// Key selection: --key-env NAME reads the key from any env var (multi-key/profiles).
+export let ACTIVE_KEY: string | undefined = (() => {
+  const i = args.indexOf("--key-env");
+  if (i > -1 && args[i + 1]) return process.env[args[i + 1]];
+  return KEY;
+})();
 
 // Display timezone: --tz <IANA zone> wins, else system local, else UTC.
 // (The Z.ai API itself always speaks UTC+8 — that is protocol, not presentation.)
@@ -183,7 +190,7 @@ async function api(url: string): Promise<any> {
     if (url.includes("customer-package-reset")) return demoResets();
     return { code: 200, success: true, data: {} };
   }
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${KEY}` } });
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${ACTIVE_KEY}` } });
   const body = await res.json();
   if (!body.success) {
     console.error(`API error (${res.status}): ${body.msg || "unknown"}`);
@@ -461,6 +468,14 @@ async function getSummary() {
     const lw = parseZ8(rd.lastWeekResetTime);
     console.log(dim(`  last weekly auto-reset: ${fmtIST(lw.getTime(), false)} ${tzShort(TZ, lw.getTime())} (${rel(lw.getTime())})`));
   }
+  try {
+    const rw = runwayDetails(quota.data, resets.data);
+    if (rw.length) {
+      console.log("");
+      console.log(bold("RUNWAY") + dim("  (burn-rate projections)"));
+      for (const r of rw) console.log(`  ${r.name.padEnd(15)} ${r.used.padStart(7)}  ${r.detail}${r.risk === "warn" ? "  ⚠" : ""}`);
+    }
+  } catch { /* runway is best-effort */ }
 }
 
 const BILL_URL = "https://api.z.ai/api/platform-charge-zai/bill/day";
@@ -594,7 +609,7 @@ async function getBill() {
       apiUsage: Math.round(Number(r.apiUsage) * 0.72),
     }));
   } else {
-    const res = await fetch(RESETS_URL, { headers: { Authorization: `Bearer ${KEY}` } });
+    const res = await fetch(RESETS_URL, { headers: { Authorization: `Bearer ${ACTIVE_KEY}` } });
     customerId = extractCustomerId(await res.text());
     if (customerId == null) {
       console.error("Could not discover customerId from customer-package-reset/list — cannot call bill/day.");
@@ -689,38 +704,34 @@ function monthLabel(period: string): string {
   return `${MONTHS_SHORT[(m || 1) - 1]} ${y}`;
 }
 
-async function getBenefits() {
-  const si = args.indexOf("--since");
-  const since = si > -1 && /^\d{4}-\d{2}$/.test(args[si + 1] || "") ? args[si + 1] : BENEFITS_SCAN_START;
+async function gatherBenefits(since: string): Promise<{ customerId: string | null; perMonth: Array<{ period: string; insights: BillInsights }>; rowsByMonth: Map<string, any[]> }> {
   let customerId: string | null = null;
   let perMonth: Array<{ period: string; insights: BillInsights }>;
+  const rowsByMonth = new Map<string, any[]>();
   if (DEMO) {
     customerId = extractCustomerId(JSON.stringify(demoResets()));
     const scale: Record<string, number> = { "2026-07": 0.4, "2026-08": 0.72, "2026-09": 1 };
-    perMonth = Object.keys(scale).map((p) => ({
-      period: p,
-      insights: billInsights(demoBillRows(p).map((r) => ({
-        ...r,
-        usageCount: String(Math.round(Number(r.usageCount) * scale[p])),
-        apiUsage: Math.round(Number(r.apiUsage) * scale[p]),
-      })), p),
-    }));
+    for (const [m, f] of Object.entries(scale)) rowsByMonth.set(m, demoRowsScaled(m, f));
+    perMonth = [...rowsByMonth].map(([period, rows]) => ({ period, insights: billInsights(rows, period) }));
   } else {
-    const res = await fetch(RESETS_URL, { headers: { Authorization: `Bearer ${KEY}` } });
+    const res = await fetch(RESETS_URL, { headers: { Authorization: `Bearer ${ACTIVE_KEY}` } });
     customerId = extractCustomerId(await res.text());
     if (customerId == null) {
       console.error("Could not discover customerId from customer-package-reset/list — cannot scan billing history.");
       process.exit(1);
     }
     perMonth = [];
-    let p = since;
-    for (let i = 0; i < 72 && p <= currentPeriod(); i++) {
-      if ((await fetchMonthTotal(customerId, p)) > 0) {
-        perMonth.push({ period: p, insights: billInsights(await collectBill(customerId, p), p) });
-      }
-      p = nextPeriod(p);
+    for (const [period, rows] of await scanMonths(customerId, since)) {
+      rowsByMonth.set(period, rows);
+      perMonth.push({ period, insights: billInsights(rows, period) });
     }
   }
+  return { customerId, perMonth, rowsByMonth };
+}
+
+async function getBenefits() {
+  const si = args.indexOf("--since");
+  const since = si > -1 && /^\d{4}-\d{2}$/.test(args[si + 1] || "") ? args[si + 1] : BENEFITS_SCAN_START;
   const sum = benefitsSummary(perMonth);
   if (jsonOut) {
     console.log(JSON.stringify({ fetchedAt: new Date().toISOString(), customerId, scanStart: since, benefits: sum }, null, 2));
@@ -799,7 +810,7 @@ const pctS = (x: number) => `${Math.round(x * 100)}%`;
 
 export function buildTips(
   cur: PeriodStats, prev: PeriodStats | null,
-  ctx: { peak: { share: number; sampleTokens: number } | null; packs: any; kind: Kind },
+  ctx: { peak: { share: number; sampleTokens: number; hours?: number } | null; packs: any; kind: Kind; quota?: any },
 ): Tip[] {
   const tips: Tip[] = [];
   const push = (icon: string, text: string) => { if (tips.length < 4) tips.push({ icon, text }); };
@@ -819,7 +830,7 @@ export function buildTips(
 
   // 2. Peak-window burn (48h hourly sample)
   if (ctx.peak && ctx.peak.share >= 0.3 && ctx.peak.sampleTokens > 1e7) {
-    push("🌙", `${pctS(ctx.peak.share)} of the last 48h tokens burned in peak window (14:00–18:00 UTC+8 Mon–Fri) — GLM-5.3 costs 3× quota then, flash 1.2×; shift batch jobs off-peak.`);
+    push("🌙", `${pctS(ctx.peak.share)} of the last 7d tokens burned in peak window (14:00–18:00 UTC+8 Mon–Fri) — GLM-5.3 costs 3× quota then, flash 1.2×; shift batch jobs off-peak.`);
   }
 
   // 3. Cache-share drop
@@ -859,11 +870,54 @@ export function buildTips(
     push("📅", `MTD list value ${money(cur.listSpend)} is ${Math.round((cur.listSpend / prev.listSpend) * 100)}% of the same span last month — full-month pace ≈ ${money(proj)}.`);
   }
 
+  // 9. Spend spike (possible runaway loop)
+  if (prev && prev.listSpend > 20 && cur.listSpend > prev.listSpend * 3) {
+    push("💸", `List value jumped ${money(prev.listSpend)} → ${money(cur.listSpend)} (3×) — check for a runaway agent loop or a pricier model mix before it compounds.`);
+  }
+
+  // 10. Monthly tool-call budget projection
+  const tl = ctx.quota?.data?.limits?.find((l: any) => l.unit === 5);
+  if (tl && Number(tl.usage) > 0 && tl.currentValue != null && tl.nextResetTime) {
+    const total = Number(tl.usage), used = Number(tl.currentValue) || 0;
+    const daysLeft = Math.max(0, (Number(tl.nextResetTime) - Date.now()) / 86_400_000);
+    const projected = Math.round((used / Math.max(1, 30 - daysLeft)) * 30);
+    if (projected >= total && used > 0) {
+      push("🛠️", `Monthly tool calls pacing ~${projected}/${total} — will run dry before reset (${rel(Number(tl.nextResetTime))}); shift search/reader work to local fetchers.`);
+    }
+  }
+
   if (!tips.length) push("✅", "No waste detected — cache share healthy, model mix lean, no packs expiring, load well spread.");
   return tips;
 }
 
-async function peakShare48h(): Promise<{ share: number; sampleTokens: number } | null> {
+async function peakShareSweep(days = 7): Promise<{ share: number; sampleTokens: number; hours: number } | null> {
+  if (DEMO) return { share: 0.41, sampleTokens: 4.2e9, hours: days * 24 };
+  const byHour = new Map<string, number>();
+  const now = Date.now();
+  const spanMs = 46 * 3_600_000;
+  for (let endT = now; endT > now - days * 86_400_000; endT -= spanMs) {
+    const startT = Math.max(endT - spanMs, now - days * 86_400_000);
+    try {
+      const from = `${z8Stamp(new Date(startT)).slice(0, 13)}:00:00`;
+      const to = z8Stamp(new Date(endT));
+      const url = `${BASE}/model-usage?startTime=${encodeURIComponent(from).replace(/%20/g, "+")}&endTime=${encodeURIComponent(to).replace(/%20/g, "+")}`;
+      const d = (await api(url)).data || {};
+      if (d.granularity !== "hourly") continue;
+      const times: string[] = d.x_time || [];
+      const toks: number[] = d.tokensUsage || [];
+      times.forEach((t, i) => { const k = t.slice(0, 13); if (!byHour.has(k)) byHour.set(k, toks[i] || 0); });
+    } catch { /* sweep is best-effort */ }
+  }
+  if (!byHour.size) return null;
+  let peak = 0, total = 0;
+  for (const [k, tok] of byHour) {
+    total += tok;
+    if (inPeakWindow(parseZ8(`${k}:00`))) peak += tok;
+  }
+  return total > 0 ? { share: peak / total, sampleTokens: total, hours: byHour.size } : null;
+}
+
+async function peakShare48h(): Promise<{ share: number; sampleTokens: number; hours?: number } | null> {
   if (DEMO) return { share: 0.41, sampleTokens: 1.1e9 };
   try {
     const from = z8Stamp(new Date(Date.now() - 48 * 3_600_000));
@@ -893,7 +947,7 @@ export function demoRowsScaled(period: string, factor: number): any[] {
   }));
 }
 
-function insightsPayload(kind: Kind, cur: PeriodStats, prev: PeriodStats | null, peak: { share: number; sampleTokens: number } | null, packs: any) {
+function insightsPayload(kind: Kind, cur: PeriodStats, prev: PeriodStats | null, peak: { share: number; sampleTokens: number; hours?: number } | null, packs: any, quota: any) {
   const rd = packs?.data || {};
   const avail = [...(rd.fiveHourResets || []), ...(rd.weekResets || [])].filter((r: any) => r.available);
   const nearestExpiry = avail.length ? z8Stamp(new Date(Math.min(...avail.map((r: any) => parseZ8(r.expireTime).getTime())))).slice(0, 10) : null;
@@ -920,7 +974,7 @@ async function aiCoach(payload: unknown, demo: boolean): Promise<string | null> 
   try {
     const res = await fetch(`${base}/chat/completions`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${KEY}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${ACTIVE_KEY}`, "Content-Type": "application/json" },
       signal: AbortSignal.timeout(25_000),
       body: JSON.stringify({
         model: "glm-5.3-flash",
@@ -953,8 +1007,9 @@ async function getInsights(kind: Kind) {
   const sp = spansFor(kind);
   let customerId: string | null = null;
   let cur: PeriodStats, prev: PeriodStats | null = null;
-  let peak: { share: number; sampleTokens: number } | null = null;
+  let peak: { share: number; sampleTokens: number; hours?: number } | null = null;
   let packs: any = null;
+  let quota: any = null;
 
   if (DEMO) {
     customerId = extractCustomerId(JSON.stringify(demoResets()));
@@ -964,17 +1019,19 @@ async function getInsights(kind: Kind) {
     const monthOf = (m: string) => monthsCache.has(m) ? monthsCache.get(m)! : (monthsCache.set(m, getMonth(m)), monthsCache.get(m)!);
     cur = describePeriod(billInsights(inRange(monthOf(sp.curFrom.slice(0, 7)), sp.curFrom, sp.curTo), sp.curFrom.slice(0, 7)), sp.curFrom, sp.curTo);
     prev = describePeriod(billInsights(inRange(monthOf(sp.prevFrom.slice(0, 7)), sp.prevFrom, sp.prevTo), sp.prevFrom.slice(0, 7)), sp.prevFrom, sp.prevTo);
-    peak = await peakShare48h();
+    peak = await peakShareSweep(7);
     packs = demoResets();
+    quota = demoQuota();
   } else {
-    const res = await fetch(RESETS_URL, { headers: { Authorization: `Bearer ${KEY}` } });
+    const res = await fetch(RESETS_URL, { headers: { Authorization: `Bearer ${ACTIVE_KEY}` } });
     customerId = extractCustomerId(await res.text());
     if (customerId == null) {
       console.error("Could not discover customerId from customer-package-reset/list.");
       process.exit(1);
     }
     packs = await api(RESETS_URL);
-    peak = await peakShare48h();
+    peak = await peakShareSweep(7);
+    quota = await api(`${BASE}/quota/limit`);
     const cache = new Map<string, Promise<any[]>>();
     const getMonth = (m: string) => {
       if (!cache.has(m)) cache.set(m, collectBill(customerId!, m));
@@ -991,11 +1048,15 @@ async function getInsights(kind: Kind) {
     prev = prevRows.length ? describePeriod(billInsights(prevRows, sp.prevFrom.slice(0, 7)), sp.prevFrom, sp.prevTo) : null;
   }
 
-  const payload = insightsPayload(kind, cur, prev, peak, packs);
-  const tips = buildTips(cur, prev, { peak, packs, kind });
-  const aiWanted = !noAi && (!!KEY || DEMO);
+  const payload = insightsPayload(kind, cur, prev, peak, packs, quota);
+  const tips = buildTips(cur, prev, { peak, packs, kind, quota });
+  const aiWanted = !noAi && (!!ACTIVE_KEY || DEMO);
   const ai = aiWanted ? await aiCoach(payload, DEMO) : null;
 
+  if (args.includes("--markdown")) {
+    console.log(renderMarkdownDigest(kind, sp, cur, prev, tips, ai));
+    return;
+  }
   if (jsonOut) {
     console.log(JSON.stringify({ fetchedAt: new Date().toISOString(), kind, customerId, spans: sp, current: cur, previous: prev, peakSample: peak, tips, ai, aiRequested: !noAi }, null, 2));
     return;
@@ -1025,6 +1086,244 @@ async function getInsights(kind: Kind) {
   }
 }
 
+// ---- Planning & data ops (v0.8.0) ----
+
+export function monthsBetween(from: string, to: string): string[] {
+  const out: string[] = [];
+  let p = from;
+  for (let i = 0; i < 120 && p <= to; i++) { out.push(p); p = nextPeriod(p); }
+  return out;
+}
+
+async function scanMonths(customerId: string, since: string): Promise<Map<string, any[]>> {
+  const map = new Map<string, any[]>();
+  for (const m of monthsBetween(since, currentPeriod())) {
+    if ((await fetchMonthTotal(customerId, m)) > 0) map.set(m, await collectBill(customerId, m));
+  }
+  return map;
+}
+
+export interface PriceRow { model: string; tokenType: string; costUnit: string; usageUnit: string; price: number; firstSeen: string; lastSeen: string; samples: number }
+
+export function learnPrices(rows: any[]): PriceRow[] {
+  const map = new Map<string, PriceRow>();
+  for (const r of rows) {
+    const day = String(r.billingDate || "");
+    const price = Number(r.costPrice);
+    if (!Number.isFinite(price) || !price) continue;
+    const key = `${r.modelCode}|${r.tokenType}|${r.costUnit}`;
+    const e = map.get(key);
+    if (!e) {
+      map.set(key, { model: String(r.modelCode || r.productCode || "other"), tokenType: String(r.tokenType || "—"), costUnit: String(r.costUnit || ""), usageUnit: String(r.usageUnit || ""), price, firstSeen: day, lastSeen: day, samples: 1 });
+    } else {
+      e.samples++;
+      if (day && (!e.firstSeen || day < e.firstSeen)) e.firstSeen = day;
+      if (day > e.lastSeen) { e.lastSeen = day; e.price = price; }
+    }
+  }
+  return [...map.values()].sort((a, b) => a.model.localeCompare(b.model) || a.tokenType.localeCompare(b.tokenType));
+}
+
+async function getPrices() {
+  const { rowsByMonth } = await gatherBenefits(BENEFITS_SCAN_START);
+  const rows = [...rowsByMonth.values()].flat();
+  const prices = learnPrices(rows);
+  if (jsonOut) { console.log(JSON.stringify({ fetchedAt: new Date().toISOString(), prices }, null, 2)); return; }
+  console.log(bold("LEARNED PRICES") + dim(`  (${rows.length} ledger rows · ${prices.length} price points · last-seen wins)`));
+  for (const pr of prices) {
+    const unit = pr.costUnit === "kToken" ? `$${(pr.price * 1000).toFixed(4)}/1M tok` : `$${pr.price}/ ${pr.usageUnit || pr.costUnit}`;
+    console.log(`  ${pr.model.padEnd(30)} ${pr.tokenType.padEnd(7)} ${unit.padEnd(20)}${dim(` seen ${pr.firstSeen} → ${pr.lastSeen} (${pr.samples}d)`)}`);
+  }
+}
+
+export function estimateCost(prices: PriceRow[], o: { model: string; inTok: number; cacheTok: number; outTok: number; timeN: number }) {
+  const pick = (tt: string) => prices.find((p) => p.model === o.model && p.tokenType === tt);
+  const pin = pick("INPUT"), pcache = pick("CACHE"), pout = pick("OUTPUT");
+  const ptime = prices.find((p) => p.model === o.model && p.costUnit !== "kToken");
+  const lines = [
+    { component: "input", tokens: o.inTok, unitPrice: pin ? pin.price : null, cost: pin ? (o.inTok / 1000) * pin.price : null },
+    { component: "cache", tokens: o.cacheTok, unitPrice: pcache ? pcache.price : null, cost: pcache ? (o.cacheTok / 1000) * pcache.price : null },
+    { component: "output", tokens: o.outTok, unitPrice: pout ? pout.price : null, cost: pout ? (o.outTok / 1000) * pout.price : null },
+    { component: "tool-time", tokens: o.timeN, unitPrice: ptime ? ptime.price : null, cost: ptime ? o.timeN * ptime.price : null },
+  ];
+  return { lines, total: lines.reduce((s2, l) => s2 + (l.cost ?? 0), 0), missing: lines.filter((l) => l.tokens > 0 && l.cost == null).map((l) => l.component) };
+}
+
+async function getEstimate() {
+  const num = (name: string) => {
+    const i = args.indexOf(name);
+    if (i < 0) return 0;
+    const m = /^([\d.]+)\s*([KkMmBb]?)$/.exec(String(args[i + 1] ?? ""));
+    if (!m) return 0;
+    const mult = m[2].toUpperCase() === "K" ? 1e3 : m[2].toUpperCase() === "M" ? 1e6 : m[2].toUpperCase() === "B" ? 1e9 : 1;
+    return Number(m[1]) * mult;
+  };
+  const mi = args.indexOf("--model");
+  const model = mi > -1 ? args[mi + 1] : "glm-5.3-flash";
+  const { rowsByMonth } = await gatherBenefits(BENEFITS_SCAN_START);
+  const prices = learnPrices([...rowsByMonth.values()].flat());
+  if (args.includes("--list")) {
+    console.log([...new Set(prices.map((x) => x.model))].sort().join("\n"));
+    return;
+  }
+  const r = estimateCost(prices, { model, inTok: num("--in"), cacheTok: num("--cache"), outTok: num("--out"), timeN: num("--time") });
+  if (jsonOut) { console.log(JSON.stringify({ model, ...r }, null, 2)); return; }
+  console.log(bold(`ESTIMATE ${model}`) + dim("  (list prices learned from your ledger)"));
+  if (!r.lines.some((l) => l.tokens > 0)) { console.log(dim("  Nothing to estimate — pass --in/--cache/--out/--time token counts.")); return; }
+  for (const l of r.lines) {
+    if (l.tokens <= 0) continue;
+    const up = l.unitPrice == null ? dim("no learned price") : l.component === "tool-time" ? `$${l.unitPrice}/call` : `$${(l.unitPrice * 1000).toFixed(4)}/1M`;
+    console.log(`  ${l.component.padEnd(10)} ${humanTokens(l.tokens).padStart(8)}  ${up.padEnd(22)} = ${l.cost == null ? dim("?") : money(l.cost)}`);
+  }
+  for (const m of r.missing) console.log(dim(`  ! no learned price for ${m} of ${model} — skipped`));
+  console.log(`  ${"-".repeat(44)}`);
+  console.log(`  list total ${money(r.total)}  ·  on a covering plan: ${money(0)}`);
+}
+
+export const EXPORT_FIELDS = ["billingDate", "modelCode", "tokenType", "usageCount", "usageUnit", "costPrice", "costUnit", "listCost", "apiUsage", "packageName", "packageId", "billingStatus", "apiKey8"] as const;
+
+export function exportRows(rows: any[]): Array<Record<string, string | number>> {
+  return rows.map((r) => ({
+    billingDate: String(r.billingDate || ""),
+    modelCode: String(r.modelCode || ""),
+    tokenType: String(r.tokenType || ""),
+    usageCount: Number(r.usageCount) || 0,
+    usageUnit: String(r.usageUnit || ""),
+    costPrice: Number(r.costPrice) || 0,
+    costUnit: String(r.costUnit || ""),
+    listCost: Number(rowListCost(r).toFixed(6)),
+    apiUsage: Number(r.apiUsage) || 0,
+    packageName: String(r.packageName ?? ""),
+    packageId: String(r.packageId ?? ""),
+    billingStatus: String(r.billingStatus ?? ""),
+    apiKey8: String(r.apiKey || "").slice(0, 8),
+  }));
+}
+
+function toCsv(rows: Array<Record<string, string | number>>): string {
+  const esc = (v: string | number) => { const t = String(v); return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
+  return [EXPORT_FIELDS.join(","), ...rows.map((r) => EXPORT_FIELDS.map((f) => esc(r[f])).join(","))].join("\n") + "\n";
+}
+
+async function getExport() {
+  const fmt = args.includes("--jsonl") ? "jsonl" : "csv";
+  const pi = args.indexOf("--period");
+  const sinceIdx = args.indexOf("--since");
+  const since = sinceIdx > -1 && /^\d{4}-\d{2}$/.test(args[sinceIdx + 1] || "") ? args[sinceIdx + 1] : BENEFITS_SCAN_START;
+  let rows: any[];
+  if (pi > -1 && /^\d{4}-\d{2}$/.test(args[pi + 1] || "")) {
+    rows = DEMO ? demoRowsScaled(args[pi + 1], 1) : await collectBill(await (async () => {
+      const res = await fetch(RESETS_URL, { headers: { Authorization: `Bearer ${ACTIVE_KEY}` } });
+      const id = extractCustomerId(await res.text());
+      if (id == null) { console.error("Could not discover customerId."); process.exit(1); }
+      return id;
+    })(), args[pi + 1]);
+  } else {
+    rows = [...(await gatherBenefits(since)).rowsByMonth.values()].flat();
+  }
+  const norm = exportRows(rows);
+  const body = fmt === "csv" ? toCsv(norm) : norm.map((r) => JSON.stringify(r)).join("\n") + "\n";
+  const oi = args.indexOf("--out");
+  if (oi > -1 && args[oi + 1]) {
+    writeFileSync(args[oi + 1], body);
+    console.log(`wrote ${norm.length} rows → ${args[oi + 1]} (${fmt})`);
+    return;
+  }
+  process.stdout.write(body);
+}
+
+export function etaHours(pctUsed: number, hoursInto: number, windowHours: number): number | null {
+  const p = Math.min(100, Math.max(0, Number(pctUsed) || 0));
+  if (p >= 100) return 0;
+  if (p <= 0) return null;
+  const into = Math.min(windowHours, Math.max(0.25, Number(hoursInto) || 0));
+  return (100 - p) / (p / into);
+}
+
+export function runwayDetails(quota: any, resets: any, now = Date.now()): Array<{ name: string; used: string; detail: string; risk: "ok" | "warn" }> {
+  const limits = quota?.data?.limits || [];
+  const rd = resets?.data || {};
+  const out: Array<{ name: string; used: string; detail: string; risk: "ok" | "warn" }> = [];
+  const f5 = limits.find((l: any) => l.unit === 3);
+  if (f5) {
+    const pct = Number(f5.percentage) || 0;
+    const last = rd.lastFiveHourResetTime ? parseZ8(rd.lastFiveHourResetTime).getTime() : null;
+    const into = last ? Math.min(5, Math.max(0.25, (now - last) / 3_600_000)) : 2.5;
+    const eta = etaHours(pct, into, 5);
+    const etaTxt = eta == null ? "no burn detected" : eta <= 0.02 ? "exhausted — waiting on reset" : `100% in ~${eta.toFixed(1)}h at this pace`;
+    out.push({ name: "5h window", used: `${pct}%`, detail: `${etaTxt} · resets ${rel(Number(f5.nextResetTime))}`, risk: eta != null && eta <= 1 ? "warn" : "ok" });
+  }
+  const wk = limits.find((l: any) => l.unit === 6);
+  if (wk) {
+    const pct = Number(wk.percentage) || 0;
+    const last = rd.lastWeekResetTime ? parseZ8(rd.lastWeekResetTime).getTime() : null;
+    const daysInto = last ? Math.min(7, Math.max(0.5, (now - last) / 86_400_000)) : 3.5;
+    const daysLeft = Math.max(0, (Number(wk.nextResetTime) - now) / 86_400_000);
+    const daily = pct / daysInto;
+    const dte = daily > 0 ? (100 - pct) / daily : null;
+    const verdict = dte == null ? "no burn detected" : dte < daysLeft ? `exhausts in ~${dte.toFixed(1)}d (${(daysLeft - dte).toFixed(1)}d dry)` : "lasts the cycle";
+    out.push({ name: "weekly quota", used: `${pct}%`, detail: `${verdict} · resets ${rel(Number(wk.nextResetTime))}`, risk: dte != null && dte < daysLeft ? "warn" : "ok" });
+  }
+  const tools = limits.find((l: any) => l.unit === 5);
+  if (tools) {
+    const total = Number(tools.usage) || 0, used = Number(tools.currentValue) || 0;
+    const daysLeft = Math.max(0, (Number(tools.nextResetTime) - now) / 86_400_000);
+    const projected = Math.round((used / Math.max(1, 30 - daysLeft)) * 30);
+    out.push({ name: "monthly tools", used: `${used}/${total}`, detail: daysLeft > 0 ? `pace ~${projected}/${total} by reset (${daysLeft.toFixed(0)}d left)` : "reset due", risk: total > 0 && projected >= total ? "warn" : "ok" });
+  }
+  return out;
+}
+
+async function getRunway() {
+  const quota = DEMO ? demoQuota() : await api(`${BASE}/quota/limit`);
+  const resets = DEMO ? demoResets() : await api(RESETS_URL);
+  const details = runwayDetails(quota, resets);
+  if (jsonOut) { console.log(JSON.stringify({ fetchedAt: new Date().toISOString(), runway: details }, null, 2)); return; }
+  console.log(bold("RUNWAY") + dim("  (burn-rate projections)"));
+  for (const r of details) console.log(`  ${r.name.padEnd(15)} ${r.used.padStart(7)}  ${r.detail}${r.risk === "warn" ? "  ⚠" : ""}`);
+}
+
+async function getCompare() {
+  const k2i = args.indexOf("--key2-env");
+  const env2 = k2i > -1 && args[k2i + 1] ? args[k2i + 1] : "ZAI_API_KEY_2";
+  const key2 = process.env[env2];
+  if (!key2 && !DEMO) { console.error(`No ${env2} in env — nothing to compare against (pass --key2-env NAME).`); process.exit(1); }
+  const saved = ACTIVE_KEY;
+  const parts: Array<{ label: string; customerId: string | null; sum: BenefitsSummary }> = [];
+  for (const [label, k] of [["key 1", saved] as const, [env2, key2] as const]) {
+    if (k) ACTIVE_KEY = k;
+    const g = await gatherBenefits(BENEFITS_SCAN_START);
+    parts.push({ label, customerId: g.customerId, sum: benefitsSummary(g.perMonth) });
+  }
+  ACTIVE_KEY = saved;
+  if (jsonOut) { console.log(JSON.stringify({ fetchedAt: new Date().toISOString(), parts }, null, 2)); return; }
+  console.log(bold("COMPARE") + dim(`  (lifetime benefits · since ${BENEFITS_SCAN_START})`));
+  for (const part of parts) {
+    console.log(`  ${part.label.padEnd(14)} ${String(part.customerId ?? "?").padEnd(20)} list ${money(part.sum.listSpend).padStart(9)} · paid ${money(part.sum.cashPaid + part.sum.creditPaid + part.sum.giftCovered).padStart(7)} · ${part.sum.months} months · ${humanTokens(part.sum.tokens)} tokens`);
+  }
+  if (parts.length === 2) {
+    const [a, b] = parts;
+    console.log(dim(`  Δ list value  ${money(a.sum.listSpend)} vs ${money(b.sum.listSpend)} → ${a.sum.listSpend >= b.sum.listSpend ? "key 1" : env2} heavier by ${money(Math.abs(a.sum.listSpend - b.sum.listSpend))}`));
+  }
+}
+
+export function renderMarkdownDigest(kind: Kind, sp: { curFrom: string; curTo: string; prevFrom: string; prevTo: string }, cur: PeriodStats, prev: PeriodStats | null, tips: Tip[], ai: string | null): string {
+  const d = (a: number, b: number) => (b ? `${a >= b ? "+" : ""}${Math.round((a / b - 1) * 100)}%` : "—");
+  const title = kind === "week"
+    ? `Last week (${dayLabel(sp.curFrom)} → ${dayLabel(sp.curTo)}) vs prior (${dayLabel(sp.prevFrom)} → ${dayLabel(sp.prevTo)})`
+    : `Month to date (${dayLabel(sp.curFrom)} → ${dayLabel(sp.curTo)}) vs same span last month`;
+  const rows = [
+    ["tokens", humanTokens(prev?.tokens ?? 0), humanTokens(cur.tokens), d(cur.tokens, prev?.tokens ?? 0)],
+    ["calls", (prev?.calls ?? 0).toLocaleString("en-US"), cur.calls.toLocaleString("en-US"), d(cur.calls, prev?.calls ?? 0)],
+    ["cache share", pctS(prev?.cacheShare ?? 0), pctS(cur.cacheShare), `${Math.round((cur.cacheShare - (prev?.cacheShare ?? 0)) * 100)} pts`],
+    ["output share", pctS(prev?.outputShare ?? 0), pctS(cur.outputShare), `${Math.round((cur.outputShare - (prev?.outputShare ?? 0)) * 100)} pts`],
+    ["list value", money(prev?.listSpend ?? 0), money(cur.listSpend), d(cur.listSpend, prev?.listSpend ?? 0)],
+    ["active days", prev ? `${prev.days}/${prev.spanDays}` : "—", `${cur.days}/${cur.spanDays}`, ""],
+  ].map((r) => `| ${r[0]} | ${r[1]} | ${r[2]} | ${r[3]} |`).join("\n");
+  const tipLines = (ai ? ai.split("\n") : tips.map((t) => t.text)).map((l) => `- ${l}`).join("\n");
+  return `### GLM usage review — ${title}\n\n| metric | prior | current | Δ |\n| --- | --- | --- | --- |\n${rows}\n\n**${ai ? "AI coach" : "Tips"}**\n\n${tipLines}\n`;
+}
+
 export function printHelp(): void {
   console.log(`zai-usage ${VERSION} — Z.ai GLM Coding Plan usage CLI
 
@@ -1044,11 +1343,20 @@ Modes:
                        cache savings, biggest month (alias: benefits; --since YYYY-MM)
   week                 last 7 days vs prior 7 — deltas, behavioral metrics, tips
   month                month-to-date vs same span last month — deltas + tips
+  prices               learned list-price table (model × token type, from your ledger)
+  estimate             pre-flight cost: --in N --cache N --out N --time N --model M
+  runway               burn-rate projections: when 5h / weekly / tool quotas run dry
+  export               normalized ledger: --csv (default) | --jsonl, --out FILE
+  compare              lifetime benefits across two keys (--key2-env NAME)
 
 Flags:
   --json               machine-readable output (any mode)
   --demo               synthetic fixtures, no API key needed (any mode)
   --no-ai              week/month: rule-based tips instead of the default AI coach
+  --markdown           week/month: paste-ready markdown digest instead of text
+  --key-env NAME       read the API key from env NAME (profiles/multi-account)
+  --since YYYY-MM      benefits/export scan start (default 2025-01)
+  --period YYYY-MM     export: single month instead of full history
   --color              force ANSI color even when piped
   --tz <IANA zone>     display timezone (default: system local, or TZ env)
   --window <name>      check window: 5h | monthly-tools | weekly (default: 5h)
@@ -1098,7 +1406,7 @@ async function runCheck() {
 export async function main() {
   if (args.includes("--help") || args.includes("-h")) { printHelp(); return; }
   if (args.includes("--version") || args.includes("-v")) { console.log(VERSION); return; }
-  if (!KEY && !DEMO) {
+  if (!ACTIVE_KEY && !DEMO) {
     console.error("No API key found. Set GLM_API_KEY (Settings > Advanced), or use --demo for a keyless tour.");
     process.exit(1);
   }
@@ -1112,6 +1420,16 @@ export async function main() {
     await getBenefits();
   } else if (args[0] === "week" || args[0] === "month") {
     await getInsights(args[0] as Kind);
+  } else if (args[0] === "prices") {
+    await getPrices();
+  } else if (args[0] === "estimate") {
+    await getEstimate();
+  } else if (args[0] === "runway") {
+    await getRunway();
+  } else if (args[0] === "export") {
+    await getExport();
+  } else if (args[0] === "compare") {
+    await getCompare();
   } else if (args[0] === "check") {
     await runCheck();
   } else {

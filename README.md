@@ -35,6 +35,8 @@ curl -fsSL -o ~/.local/bin/zai-usage https://raw.githubusercontent.com/LogicIncZ
 chmod +x ~/.local/bin/zai-usage
 ```
 
+Docs site: **https://logicinczo.github.io/zai-usage/** (overview + full guide — every mode with flags and sample output).
+
 ## Usage
 
 ```text
@@ -235,7 +237,7 @@ plan deduction) — chart real spend and "what this would cost retail" side by s
 ### Tests
 
 ```bash
-bun test        # 42 unit tests — no API key needed (pure functions + demo fixtures)
+bun test        # 46 unit tests — no API key needed (pure functions + demo fixtures)
 ```
 
 ## What it reports
@@ -246,6 +248,11 @@ bun test        # 42 unit tests — no API key needed (pure functions + demo fix
 | MODEL USAGE | Tokens and % share per model across the current 5-hour quota window plus Hour / 24h / 7d / 30d / current-month rolling windows |
 | QUOTA | 5-hour + monthly tool-call limits, usage detail per tool (search-prime, web-reader, zread), reset times |
 | RESET PACKS | Purchased quota-reset packs: available count, nearest expiry, last auto-reset |
+| PRICES | Price table learned from your own ledger (last-seen costPrice per model × token-type) |
+| ESTIMATE | Cost a hypothetical workload (--in/--cache/--out, K/M/B suffixes) at learned list prices |
+| RUNWAY | Burn-rate projections: 5h window, monthly tool calls |
+| COMPARE | Two accounts side by side (Lite vs Pro) via --key2-env |
+| EXPORT | Raw billing ledger as CSV or JSONL (feeds DuckDB) |
 | BILL | Day-level billing ledger: list-price spend, actually billed vs plan-covered, input/cache/output token split, prompt-cache savings, blended cost per 1M tokens, peak day, month-over-month, per-day bars + per-model table |
 
 ## API endpoints

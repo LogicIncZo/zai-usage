@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>zai-usage — full guide</title>
+<meta name="description" content="Every zai-usage mode, flag, and annotated sample output: quota, usage, week/month behavioral reviews, bill, benefits, prices, estimate, runway, compare, export, check.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="hero">
+  <div class="wrap">
+    <div class="prompt">$ zai-usage --help</div>
+    <h1>Full guide</h1>
+    <p class="tagline">Every mode, every flag, annotated sample output.</p>
+    <div class="cta"><a class="btn ghost" href="index.html">&larr; overview</a></div>
+  </div>
+</header>
+
+<main class="wrap">
+<nav>
+<p><strong>Contents:</strong>
+<a href="#setup">Setup</a> ·
+<a href="#quota">quota (default)</a> ·
+<a href="#usage">usage</a> ·
+<a href="#review">week / month</a> ·
+<a href="#bill">bill</a> ·
+<a href="#benefits">benefits</a> ·
+<a href="#prices">prices</a> ·
+<a href="#estimate">estimate</a> ·
+<a href="#runway">runway</a> ·
+<a href="#compare">compare</a> ·
+<a href="#export">export</a> ·
+<a href="#check">check</a> ·
+<a href="#privacy">AI coach &amp; privacy</a> ·
+<a href="#endpoints">API &amp; quirks</a></p>
+</nav>
+
+<h2 id="setup">Setup</h2>
+<p>The CLI reads your API key from <code>GLM_API_KEY</code>, <code>ZAI_API_KEY</code>, or <code>Z_AI_API_KEY</code> — the same key the GLM Coding Plan endpoint uses. Add <code>--demo</code> to any mode for deterministic sample output with a frozen clock (2026-09-12); no key needed.</p>
+
+<h2 id="quota">quota — the default mode</h2>
+<pre class="out"><code>Z.AI GLM Coding Plan — PRO · as of 12 Sept, 09:17 UTC
+5-HOUR QUOTA [#########-----------]  47% · resets Sat, 12 Sept, 11:30 UTC (in 2h 13m)
+
+MODEL USAGE  (5h quota window · rolling windows · current month · UTC+8 · tokens with % share)
++---------------+--------------+-------------+--------------+
+| model         |     5h Quota |    Day (24h)| Current month|
++---------------+--------------+-------------+--------------+
+| GLM-5.3-Flash | 156.00M  76% |   1.47B  76%|   17.20B  76%|
+| GLM-5-Turbo   |  29.80M  14% | 275.00M  14%|    3.22B  14%|
+| GLM-5.3       |  14.50M   7% | 138.00M   7%|    1.61B   7%|
++---------------+--------------+-------------+--------------+
+| TOTAL tokens  |      198.00M |        1.86B|        21.70B|
+| TOTAL calls   |           95 |          889|        10,419|
++---------------+--------------+-------------+--------------+
+
+QUOTA
+  5-hour quota        47% · resets Sat, 12 Sept, 11:30 UTC (in 2h 13m)
+  Monthly tool calls  38% (38/100, 62 left) · resets Tue, 29 Sept, 03:44 UTC
+
+RESET PACKS  (customer-package-reset · PERSONAL)
+  5-hour resets:  3 available · nearest expiry 07 Nov, 15:59 UTC · 1 used/expired
+  weekly resets:  2 available · nearest expiry 07 Nov, 15:59 UTC</code></pre>
+<p>The per-model matrix gives six windows side by side: the current 5-hour quota window (via <code>nextResetTime</code>), Hour, 24h, 7d, 30d, and the current UTC+8 calendar month. All timestamps are Asia/Shanghai (UTC+8) because that is how Z.ai buckets them; display converts to your local timezone (<code>TZ</code> / <code>--tz Asia/Kolkata</code>).</p>
+
+<h2 id="usage">usage — model matrix only</h2>
+<pre><code>zai-usage usage            # all windows
+zai-usage usage --hourly   # hour-granularity buckets where offered</code></pre>
+
+<h2 id="review">week / month — behavioral review</h2>
+<p>The flagship mode (v0.7.0). It compares the last 7 days against the previous 7 (<code>week</code>), or month-to-date against the same span last month (<code>month</code>), runs eight deterministic tip rules, and then — by default — asks GLM (your own plan key, ~2K tokens of aggregate metrics) to write a short coach's note.</p>
+<pre><code>zai-usage week             # last 7 days vs prior 7
+zai-usage month            # month-to-date vs same span last month
+zai-usage week --no-ai     # skip the coach, rules only
+zai-usage week --markdown  # agent-friendly report
+zai-usage week --json      # machine-readable</code></pre>
+<pre class="out"><code>LAST WEEK  (Sep 15 → Sep 21 vs Sep 8 → Sep 14 · UTC+8 days)
+  tokens      1.15B → 1.11B  (-3%)   ·  calls 33,886 → 32,467  (-4%)
+  cache share 71% → 77%  (+6 pts)     ·  output share 6% → 6%  (0)
+  list value  $52.96 → $41.98  (-21%) ·  active days 7/7 → 7/7
+
+  📌  TIPS  (deterministic rules)
+  ⏰  34% of this week's calls ran in the 08:00–12:00 UTC+8 peak —
+      flash costs 1.2× then; shift batch jobs off-peak.
+
+  🤖  AI COACH  (glm-5.3-flash · aggregates only)
+  Weekly volume dipped 3% in tokens and calls while list spend fell 21%...
+  - Consolidate related edits per prompt to cut call count.
+  - Cache share improved 6 points; keep prompts prefix-stable.</code></pre>
+<p>The eight rules, their thresholds, and the coach's exact inputs are documented on the <a href="#privacy">insights section</a> below.</p>
+
+<h2 id="bill">bill — one month's ledger</h2>
+<pre><code>zai-usage bill             # current UTC+8 month
+zai-usage bill 2026-08     # a specific month
+zai-usage bill --json</code></pre>
+<pre class="out"><code>BILL 2026-09  (platform-charge-zai/bill/day · 139 rows · 19 days · UTC+8 billing days)
+  List-price spend   $227.10  (pay-as-you-go list value of this usage)
+  Actually billed    $0.00  (cash $0.00 · credits $0.00 · gift $0.00)
+  Plan-covered       $227.10  (list value absorbed by your coding-plan package)
+  Calls 9,603 · Tokens 1.55B  (in 269.61M · cache 1.21B · out 67.56M)
+  Cache savings      $267.73  (cached tokens billed 80% below input list)
+  Blended list cost  $0.15 per 1M tokens
+  Peak day           2026-09-11  ($13.67)
+  MoM                +38.9%  ($163.52 across 2026-08)</code></pre>
+<p>"List-price spend" is what the same token mix would have cost pay-as-you-go, computed row by row from the ledger's own <code>costPrice</code> — not from a hardcoded price table. "Plan-covered" is the part your subscription absorbed; "cache savings" is what prompt-cache pricing saved versus full input price.</p>
+
+<h2 id="benefits">benefits / codingplan-benefits — lifetime plan value</h2>
+<pre><code>zai-usage codingplan-benefits          # alias: benefits
+zai-usage benefits --since 2026-06     # limit the scan
+zai-usage benefits --json</code></pre>
+<pre class="out"><code>CODING PLAN BENEFITS  (Mar 2026 → Sep 2026 · 7 billed months)
+  Used list value    $1,817.20  (pay-as-you-go value of everything you ran)
+  Actually paid      $23.96  (cash $0.00 · credits $23.96 · gift $0.00)
+  Plan covered       $1,793.24  (99% of list value absorbed by your plan)
+  Usage              102,842 calls · 14.01B tokens  (in 2.71B · cache 10.61B · out 694M)
+  Cache savings      $1,886.42  · blended $0.13 per 1M tokens (list)
+  Biggest month      Aug 2026 ($556.72)  · current month so far $153.36</code></pre>
+<p>The scan walks <code>bill/day</code> month-by-month from the first billed month (2026-03 on this account; override with <code>--since</code>), 100 rows per page, and prints a small per-month table at the end.</p>
+
+<h2 id="prices">prices — learned from your own ledger</h2>
+<pre><code>zai-usage prices
+zai-usage prices --json</code></pre>
+<pre class="out"><code>LEARNED PRICES  (444 ledger rows · 8 price points · last-seen wins)
+  glm-5.3       INPUT   $1.0000/1M tok   seen 2026-07-01 → 2026-09-21 (63d)
+  glm-5.3       CACHE   $0.2000/1M tok   seen 2026-07-01 → 2026-09-21 (63d)
+  glm-5.3       OUTPUT  $4.0000/1M tok   seen 2026-07-01 → 2026-09-21 (63d)</code></pre>
+<p>Z.ai publishes no stable price table for coding-plan accounts; the ledger's <code>costPrice</code> per row is the source of truth. Last-seen wins, so price changes show up as your billing reflects them.</p>
+
+<h2 id="estimate">estimate — what would a workload cost?</h2>
+<pre><code>zai-usage estimate --in 10M --cache 50M --out 500K --model glm-5.3-flash
+zai-usage estimate --list                  # models with learned prices</code></pre>
+<pre class="out"><code>ESTIMATE glm-5.3-flash  (list prices learned from your ledger)
+  input        10.00M  $0.1500/1M             = $1.50
+  cache        50.00M  $0.0300/1M             = $1.50
+  output       500.0K  $0.6000/1M             = $0.30
+  --------------------------------------------
+  list total $3.30  ·  on a covering plan: $0.00</code></pre>
+<p>Suffixes K/M/B are accepted. Useful sanity check before pointing a batch job at the wrong model.</p>
+
+<h2 id="runway">runway — burn rate</h2>
+<pre><code>zai-usage runway</code></pre>
+<pre class="out"><code>RUNWAY  (burn-rate projections)
+  5h window           47%  100% in ~5.6h at this pace · resets in 2h 13m
+  monthly tools    38/100  pace ~86/100 by reset (17d left)</code></pre>
+
+<h2 id="compare">compare — two accounts side by side</h2>
+<pre><code>ZAI_API_KEY_2=... zai-usage compare
+zai-usage compare --key2-env GLM_API_KEY_LITE</code></pre>
+<p>Diffs plan level, 5h quota, monthly tools, reset packs, and month-to-date list value between two keys — built for Lite-vs-Pro questions ("did the upgrade pay for itself?").</p>
+
+<h2 id="export">export — raw ledger</h2>
+<pre><code>zai-usage export                # current month, CSV
+zai-usage export 2026-08        # a specific month
+zai-usage export 2026-08 --jsonl
+zai-usage export 2026-08 --csv -o aug.csv</code></pre>
+<p>Emits the ledger rows as fetched: billing date, model, token type, counts, cost price, list cost, billing status, and a masked <code>apiKey8</code> (first 8 chars only). Feeds DuckDB nicely: <code>duckdb -c "SELECT * FROM read_jsonl('aug.jsonl')"</code>.</p>
+
+<h2 id="check">check — the agent gate</h2>
+<pre><code>zai-usage check --window 5h --min 20
+zai-usage check --window monthly-tools --min 50 --json</code></pre>
+<p>Exit <code>0</code> if the window's usage is at or above <code>--min%</code> (fine to continue), <code>1</code> if below (headroom left), <code>2</code> on API error. Built for cron/agents: "if the 5-hour window is ≥80% used, switch to local tools."</p>
+
+<h2 id="privacy">The AI coach &amp; privacy</h2>
+<p><code>week</code> and <code>month</code> call GLM by default (that is the <code>--ai</code> default; pass <code>--no-ai</code> for rules only). The prompt is built by <code>insightsPayload()</code> and contains <strong>only aggregate metrics</strong>:</p>
+<ul>
+  <li>span totals: tokens, calls, cache share, output share, list value, active days — current vs previous</li>
+  <li>the tips the deterministic rules already fired (plus the ones that didn't)</li>
+  <li>peak-hour share computed from the hourly sample sweep</li>
+  <li>reset-pack availability and nearest expiry</li>
+</ul>
+<p>It never contains prompts, code, file names, message content, or API-key material, and the call runs on your own plan key (~2K tokens). If the coach call fails, the rules-based tips still print — the mode never hard-fails on AI.</p>
+
+<h2 id="endpoints">API endpoints &amp; quirks</h2>
+<table>
+  <thead><tr><th>Endpoint</th><th>Used for</th></tr></thead>
+  <tbody>
+    <tr><td><code>GET /api/monitor/usage/quota/limit</code></td><td>plan level, 5-hour token %, monthly tool-call %, reset times</td></tr>
+    <tr><td><code>GET /api/monitor/usage/model-usage</code></td><td>per-model tokens/calls per window (span limited to 30d)</td></tr>
+    <tr><td><code>GET /api/biz/customer-package-reset/list?targetType=PERSONAL</code></td><td>reset packs + <strong>customerId</strong> (auto-discovery for billing)</td></tr>
+    <tr><td><code>GET /api/platform-charge-zai/bill/day?customerId=&amp;billingPeriod=YYYY-MM&amp;pageNum=&amp;pageSize=</code></td><td>day-level billing records; paginated at 100 rows/page</td></tr>
+  </tbody>
+</table>
+<h3>Quirks worth knowing</h3>
+<ul>
+  <li>All bucket labels are <strong>Asia/Shanghai (UTC+8)</strong>; a "day" there differs from yours. Display converts; storage stays UTC+8.</li>
+  <li>The 5-hour window is a rolling quota anchored to <code>nextResetTime</code>, not a fixed wall-clock window.</li>
+  <li>The billing ledger is list-price bookkeeping. Coding-plan rows bill $0 and are "Paid" — that is why plan-covered value is meaningful and why a big bill is not a big charge.</li>
+  <li>Prices are learned, not hardcoded: last-seen <code>costPrice</code> per model × token-type wins.</li>
+  <li>Amounts are in the account's billing currency (USD on api.z.ai).</li>
+  <li><code>--demo</code> freezes the clock at 2026-09-12 so sample output is deterministic; screenshots and tests use it.</li>
+</ul>
+
+<footer>
+  <p>MIT · <a href="https://github.com/LogicIncZo/zai-usage">LogicIncZo/zai-usage</a> · <a href="index.html">overview</a></p>
+</footer>
+</main>
+</body>
+</html>

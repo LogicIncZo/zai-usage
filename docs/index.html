@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>zai-usage — GLM Coding Plan usage CLI</title>
+<meta name="description" content="Single-file, zero-dependency CLI for the Z.ai GLM Coding Plan: quota windows, behavioral reviews, billing insights, runway, and an optional AI coach.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="hero">
+  <div class="wrap">
+    <div class="prompt">$ bunx zai-usage</div>
+    <h1>zai-usage</h1>
+    <p class="tagline">Know your GLM Coding Plan — quota windows, behavioral reviews, and what your usage is worth in list-price dollars.</p>
+    <p class="meta">Single file · zero dependencies · Bun/TypeScript · your key stays yours</p>
+    <div class="cta">
+      <a class="btn" href="https://github.com/LogicIncZo/zai-usage">GitHub</a>
+      <a class="btn" href="guide.html">Full guide</a>
+      <a class="btn ghost" href="https://www.npmjs.com/package/zai-usage">npm</a>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <section>
+    <h2>Quick start</h2>
+    <pre><code>export GLM_API_KEY=...        # or ZAI_API_KEY / Z_AI_API_KEY
+bunx zai-usage                # quota overview</code></pre>
+  </section>
+
+  <section>
+    <h2>What it reads</h2>
+    <p>Four undocumented Z.ai endpoints, using your GLM Coding Plan API key only. Nothing is written anywhere; the optional AI coach receives aggregate metrics only — never your prompts or code (<a href="guide.html#privacy">details</a>).</p>
+    <ol class="endpoints">
+      <li><code>GET /api/monitor/usage/quota/limit</code> — plan level, 5-hour token %, monthly tool-call %</li>
+      <li><code>GET /api/monitor/usage/model-usage</code> — per-model tokens and calls per window</li>
+      <li><code>GET /api/biz/customer-package-reset/list</code> — reset packs <em>and</em> your customerId (auto-discovery)</li>
+      <li><code>GET /api/platform-charge-zai/bill/day</code> — the day-level billing ledger everything else is computed from</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Modes</h2>
+    <table>
+      <thead><tr><th>Mode</th><th>What it tells you</th></tr></thead>
+      <tbody>
+        <tr><td><em>(default)</em></td><td>5-hour quota %, per-model rolling windows, reset packs</td></tr>
+        <tr><td><code>usage</code></td><td>per-model tokens/calls across Hour/24h/7d/30d/current month</td></tr>
+        <tr><td><code>week</code> / <code>month</code></td><td>behavioral review: this span vs previous, 8 tip rules, AI coach</td></tr>
+        <tr><td><code>bill [YYYY-MM]</code></td><td>month ledger: list-price spend, billed vs plan-covered, cache savings, MoM</td></tr>
+        <tr><td><code>benefits</code> · <code>codingplan-benefits</code></td><td>lifetime plan value since first billed month (<code>--since YYYY-MM</code>)</td></tr>
+        <tr><td><code>prices</code></td><td>price points learned from your own ledger</td></tr>
+        <tr><td><code>estimate</code></td><td>what a hypothetical workload would cost on list prices</td></tr>
+        <tr><td><code>runway</code></td><td>how long until the 5h window / monthly calls run out at current pace</td></tr>
+        <tr><td><code>compare</code></td><td>diff two accounts (e.g. Lite vs Pro) side by side</td></tr>
+        <tr><td><code>export</code></td><td>raw ledger as CSV or JSONL</td></tr>
+        <tr><td><code>check</code></td><td>agent gate: <code>--json</code>, exit codes, thresholds for automations</td></tr>
+      </tbody>
+    </table>
+    <p>Flags and annotated output for every mode are in the <a href="guide.html">full guide</a>.</p>
+  </section>
+
+  <section>
+    <h2>Install</h2>
+    <pre><code># run without installing
+bunx zai-usage
+npx zai-usage
+
+# or install the single file
+curl -fsSL -o ~/.local/bin/zai-usage \
+  https://raw.githubusercontent.com/LogicIncZo/zai-usage/main/zai-usage.ts
+chmod +x ~/.local/bin/zai-usage</code></pre>
+  </section>
+
+  <footer>
+    <p>MIT · <a href="https://github.com/LogicIncZo/zai-usage">LogicIncZo/zai-usage</a> · built on the GLM Coding Plan it measures</p>
+  </footer>
+</main>
+</body>
+</html>
