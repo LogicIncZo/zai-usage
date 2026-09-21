@@ -101,6 +101,23 @@ the same usage would have cost without the plan — so "plan-covered" shows the 
 your subscription absorbs and "cache savings" shows what prompt-cache pricing saves
 against input list. (Synthetic `--demo` data above.)
 
+#### `codingplan-benefits` — lifetime plan value at a glance
+
+Scans every billing month (from 2025-01; `--since YYYY-MM` overrides) and prints the
+lifetime picture in one short block:
+
+```text
+CODING PLAN BENEFITS  (Mar 2026 → Sep 2026 · 7 billed months)
+  Used list value    $1,819.52  (pay-as-you-go value of everything you ran)
+  Actually paid      $23.96  (cash $0.00 · credits $0.00 · gift $23.96)
+  Plan covered       $1,795.56  (99% of list value absorbed by your plan)
+  Usage              256,842 calls · 7.62B tokens  (in 1.11B · cache 6.47B · out 40M)
+  Cache savings      $3,874.53  · blended $0.24 per 1M tokens (list)
+  Biggest month      Aug 2026 ($556.72)  · current month so far $153.36
+```
+
+(alias: `benefits`; `--json` returns the full per-month breakdown.)
+
 ### Times & timezones
 
 - **API side (fixed):** the Z.ai monitor API interprets request ranges and bucket labels in **Asia/Shanghai (UTC+8)**. The CLI keeps bucket labels in UTC+8 and says so.
@@ -202,7 +219,7 @@ plan deduction) — chart real spend and "what this would cost retail" side by s
 ### Tests
 
 ```bash
-bun test        # 31 unit tests — no API key needed (pure functions + demo fixtures)
+bun test        # 34 unit tests — no API key needed (pure functions + demo fixtures)
 ```
 
 ## What it reports

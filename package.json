@@ -1,6 +1,6 @@
 {
   "name": "zai-usage",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Terminal CLI for Z.ai GLM Coding Plan usage \u2014 quota, rolling-window model usage, reset packs, daily billing insights",
   "type": "module",
   "bin": {

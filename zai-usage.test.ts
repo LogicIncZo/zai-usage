@@ -2,7 +2,7 @@ import { describe, test, expect } from "bun:test";
 import {
   humanTokens, bar, z8Stamp, parseZ8, startOfMonthUTC8, inPeakWindow,
   fmtWhen, tzShort, pickTZ, renderTable, demoQuota, demoResets, demoModelUsage, checkDecision,
-  billCustomerId, extractCustomerId, prevPeriod, billInsights, rowListCost, demoBillRows } from "./zai-usage.ts";
+  billCustomerId, extractCustomerId, prevPeriod, nextPeriod, billInsights, benefitsSummary, rowListCost, demoBillRows } from "./zai-usage.ts";
 
 describe("humanTokens", () => {
   test("formats by magnitude", () => {
@@ -240,5 +240,41 @@ describe("billInsights", () => {
     const down = billInsights(mk(2), "2026-09", billInsights(mk(5), "2026-08").listSpend);
     expect(down.momPct).toBeLessThan(0);
     expect(billInsights(mk(2), "2026-09").momPct).toBe(null);
+  });
+});
+
+describe("nextPeriod", () => {
+  test("rolls the year forward", () => {
+    expect(nextPeriod("2026-09")).toBe("2026-10");
+    expect(nextPeriod("2026-12")).toBe("2027-01");
+  });
+});
+
+describe("benefitsSummary", () => {
+  const mkRows = (n: number, price = "0.001") => Array.from({ length: n }, (_, i) => ({
+    billingDate: `2026-0${(i % 8) + 1}-15`, modelCode: "glm-5.3", productCode: "inference", usageUnit: "token", costUnit: "kToken",
+    costPrice: price, usageCount: "1000000", apiUsage: 1, tokenType: "INPUT", unpaidAmount: "0", cashAmount: "0", creditPayAmount: "0", giftDeductAmount: "0",
+  }));
+  test("aggregates months into lifetime totals", () => {
+    const perMonth = [
+      { period: "2026-03", insights: billInsights(mkRows(2), "2026-03") },
+      { period: "2026-04", insights: billInsights(mkRows(5), "2026-04") },
+    ];
+    const sum = benefitsSummary(perMonth);
+    expect(sum.months).toBe(2);
+    expect(sum.firstMonth).toBe("2026-03");
+    expect(sum.lastMonth).toBe("2026-04");
+    expect(sum.listSpend).toBeCloseTo(7, 5);
+    expect(sum.planCovered).toBeCloseTo(7, 5);
+    expect(sum.calls).toBe(7);
+    expect(sum.bestMonth?.period).toBe("2026-04");
+    expect(sum.currentMonthSpend).toBeCloseTo(5, 5);
+    expect(sum.byMonth.length).toBe(2);
+  });
+  test("empty history is safe", () => {
+    const sum = benefitsSummary([]);
+    expect(sum.months).toBe(0);
+    expect(sum.firstMonth).toBe(null);
+    expect(sum.costPerMTok).toBe(null);
   });
 });

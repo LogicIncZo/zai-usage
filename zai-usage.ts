@@ -3,7 +3,7 @@ const KEY = process.env.GLM_API_KEY || process.env.ZAI_API_KEY || process.env.Z_
 
 const BASE = "https://api.z.ai/api/monitor/usage";
 const RESETS_URL = "https://api.z.ai/api/biz/customer-package-reset/list?targetType=PERSONAL";
-export const VERSION = "0.5.0";
+export const VERSION = "0.6.0";
 const args = process.argv.slice(2);
 const jsonOut = args.includes("--json");
 const DEMO = args.includes("--demo");
@@ -639,6 +639,113 @@ async function getBill() {
   console.log(renderTable(["model", "tokens", "calls", "list spend", "share"], mrows, ["l", "r", "r", "r", "r"]));
 }
 
+const BENEFITS_SCAN_START = "2025-01";
+const currentPeriod = (): string => z8Date().slice(0, 7);
+
+export function nextPeriod(period: string): string {
+  const [y, m] = period.split("-").map(Number);
+  return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
+}
+
+async function fetchMonthTotal(customerId: string, period: string): Promise<number> {
+  const url = `${BILL_URL}?customerId=${customerId}&billingPeriod=${period}&pageNum=1&pageSize=1`;
+  return Number((await api(url)).data?.total) || 0;
+}
+
+export interface BenefitsSummary {
+  firstMonth: string | null; lastMonth: string | null; months: number;
+  listSpend: number; cashPaid: number; creditPaid: number; giftCovered: number; planCovered: number;
+  calls: number; tokens: number; inputTokens: number; cacheTokens: number; outputTokens: number;
+  cacheSavings: number; costPerMTok: number | null;
+  bestMonth: { period: string; listSpend: number } | null; currentMonthSpend: number;
+  byMonth: Array<{ period: string; listSpend: number; calls: number; tokens: number; billed: number }>;
+}
+
+export function benefitsSummary(perMonth: Array<{ period: string; insights: BillInsights }>): BenefitsSummary {
+  let listSpend = 0, cashPaid = 0, creditPaid = 0, giftCovered = 0, calls = 0;
+  let inputTokens = 0, cacheTokens = 0, outputTokens = 0, cacheSavings = 0;
+  const byMonth = perMonth.map(({ period, insights: i }) => {
+    listSpend += i.listSpend; cashPaid += i.cashPaid; creditPaid += i.creditPaid; giftCovered += i.giftCovered;
+    calls += i.calls; inputTokens += i.inputTokens; cacheTokens += i.cacheTokens; outputTokens += i.outputTokens;
+    cacheSavings += i.cacheSavings;
+    return { period, listSpend: i.listSpend, calls: i.calls, tokens: i.tokens, billed: i.cashPaid + i.creditPaid + i.giftCovered };
+  });
+  const tokens = inputTokens + cacheTokens + outputTokens;
+  const bestMonth = perMonth.reduce<{ period: string; listSpend: number } | null>(
+    (b, m) => (!b || m.insights.listSpend > b.listSpend ? { period: m.period, listSpend: m.insights.listSpend } : b), null);
+  const billed = cashPaid + creditPaid + giftCovered;
+  return {
+    firstMonth: byMonth[0]?.period ?? null, lastMonth: byMonth[byMonth.length - 1]?.period ?? null, months: byMonth.length,
+    listSpend, cashPaid, creditPaid, giftCovered, planCovered: Math.max(0, listSpend - billed),
+    calls, tokens, inputTokens, cacheTokens, outputTokens,
+    cacheSavings, costPerMTok: tokens > 0 ? listSpend / (tokens / 1e6) : null,
+    bestMonth, currentMonthSpend: byMonth[byMonth.length - 1]?.listSpend ?? 0, byMonth,
+  };
+}
+
+const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function monthLabel(period: string): string {
+  const [y, m] = period.split("-").map(Number);
+  return `${MONTHS_SHORT[(m || 1) - 1]} ${y}`;
+}
+
+async function getBenefits() {
+  const si = args.indexOf("--since");
+  const since = si > -1 && /^\d{4}-\d{2}$/.test(args[si + 1] || "") ? args[si + 1] : BENEFITS_SCAN_START;
+  let customerId: string | null = null;
+  let perMonth: Array<{ period: string; insights: BillInsights }>;
+  if (DEMO) {
+    customerId = extractCustomerId(JSON.stringify(demoResets()));
+    const scale: Record<string, number> = { "2026-07": 0.4, "2026-08": 0.72, "2026-09": 1 };
+    perMonth = Object.keys(scale).map((p) => ({
+      period: p,
+      insights: billInsights(demoBillRows(p).map((r) => ({
+        ...r,
+        usageCount: String(Math.round(Number(r.usageCount) * scale[p])),
+        apiUsage: Math.round(Number(r.apiUsage) * scale[p]),
+      })), p),
+    }));
+  } else {
+    const res = await fetch(RESETS_URL, { headers: { Authorization: `Bearer ${KEY}` } });
+    customerId = extractCustomerId(await res.text());
+    if (customerId == null) {
+      console.error("Could not discover customerId from customer-package-reset/list — cannot scan billing history.");
+      process.exit(1);
+    }
+    perMonth = [];
+    let p = since;
+    for (let i = 0; i < 72 && p <= currentPeriod(); i++) {
+      if ((await fetchMonthTotal(customerId, p)) > 0) {
+        perMonth.push({ period: p, insights: billInsights(await collectBill(customerId, p), p) });
+      }
+      p = nextPeriod(p);
+    }
+  }
+  const sum = benefitsSummary(perMonth);
+  if (jsonOut) {
+    console.log(JSON.stringify({ fetchedAt: new Date().toISOString(), customerId, scanStart: since, benefits: sum }, null, 2));
+    return;
+  }
+  if (!sum.months) {
+    console.log(bold("CODING PLAN BENEFITS") + dim("  — no billing history found" + (since !== BENEFITS_SCAN_START ? ` since ${since}` : "")));
+    return;
+  }
+  console.log(bold("CODING PLAN BENEFITS") + dim(`  (${monthLabel(sum.firstMonth!)} → ${monthLabel(sum.lastMonth!)} · ${sum.months} billed months)`));
+  console.log(`  Used list value    ${money(sum.listSpend)}${dim("  (pay-as-you-go value of everything you ran)")}`);
+  const paid = sum.cashPaid + sum.creditPaid + sum.giftCovered;
+  console.log(`  Actually paid      ${money(paid)}${dim(`  (cash ${money(sum.cashPaid)} · credits ${money(sum.creditPaid)} · gift ${money(sum.giftCovered)})`)}`);
+  if (sum.listSpend > 0) {
+    console.log(`  Plan covered       ${money(sum.planCovered)}${dim(`  (${Math.round((sum.planCovered / sum.listSpend) * 100)}% of list value absorbed by your plan)`)}`);
+  }
+  console.log(`  Usage              ${sum.calls.toLocaleString("en-US")} calls · ${humanTokens(sum.tokens)} tokens${dim(`  (in ${humanTokens(sum.inputTokens)} · cache ${humanTokens(sum.cacheTokens)} · out ${humanTokens(sum.outputTokens)})`)}`);
+  if (sum.cacheSavings > 0) {
+    console.log(`  Cache savings      ${money(sum.cacheSavings)}${dim(`  · blended ${money(sum.costPerMTok ?? 0)} per 1M tokens (list)`)}`);
+  }
+  if (sum.bestMonth) {
+    console.log(`  Biggest month      ${monthLabel(sum.bestMonth.period)} (${money(sum.bestMonth.listSpend)})${dim(`  · current month so far ${money(sum.currentMonthSpend)}`)}`);
+  }
+}
+
 export function printHelp(): void {
   console.log(`zai-usage ${VERSION} — Z.ai GLM Coding Plan usage CLI
 
@@ -653,6 +760,9 @@ Modes:
   bill [YYYY-MM]       daily platform billing (platform-charge-zai/bill/day) for a month:
                        list vs actually-billed vs plan-covered, tokens by type, cache
                        savings, blended $/1M tokens, per-day bars, per-model table, MoM
+  codingplan-benefits  lifetime plan value at a glance: scans all billing months,
+                       prints list value used vs what you paid, plan-covered %,
+                       cache savings, biggest month (alias: benefits; --since YYYY-MM)
 
 Flags:
   --json               machine-readable output (any mode)
@@ -716,6 +826,8 @@ export async function main() {
     await getModelUsage();
   } else if (args[0] === "bill") {
     await getBill();
+  } else if (args[0] === "codingplan-benefits" || args[0] === "benefits") {
+    await getBenefits();
   } else if (args[0] === "check") {
     await runCheck();
   } else {
