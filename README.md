@@ -11,7 +11,7 @@ Terminal CLI for the Z.ai GLM Coding Plan: quota windows, rolling-window model u
 
 ![zai-usage terminal screenshot](docs/screenshot.png)
 
-Single-file Bun/TypeScript, zero dependencies. Talks to three undocumented Z.ai monitor endpoints with your GLM Coding Plan API key.
+Single-file Bun/TypeScript, zero dependencies. Talks to four undocumented Z.ai endpoints — three monitor endpoints plus the platform billing API — with your GLM Coding Plan API key.
 
 ## Install
 
@@ -65,6 +65,41 @@ RESET PACKS  (customer-package-reset · PERSONAL)
   weekly resets:  2 available · nearest expiry 07 Nov, 15:59 UTC (in 56d 6h)
   last 5h auto-reset: 10 Sept, 22:02 UTC (1d 11h ago)
 ```
+
+### Billing (list-price insights)
+
+`bill` reads the platform billing API — the same day-level ledger behind the Z.ai
+console's billing page — and turns it into spend insights. `customerId` is
+auto-discovered from the reset-pack endpoint.
+
+```text
+BILL 2026-09  (platform-charge-zai/bill/day · 148 rows · 21 days · UTC+8 billing days)
+  List-price spend   $227.10  (pay-as-you-go list value of this usage)
+  Actually billed    $0.00  (cash $0.00 · credits $0.00 · gift $0.00)
+  Plan-covered       $227.10  (list value absorbed by your coding-plan package)
+  Calls 9,603 · Tokens 1.55B  (in 269.61M · cache 1.21B · out 67.56M)
+  Cache savings      $267.73  (cached tokens billed 80% below input list)
+  Blended list cost  $0.15 per 1M tokens
+  Peak day           2026-09-11  ($13.67)
+  MoM                +38.9%  ($163.52 across 2026-08)
+
+2026-09-01     $11.45     513 calls    63.49M tokens  ███████████████████████
+2026-09-02     $13.44     428 calls    88.03M tokens  ████████████████████████████
+...
++---------------+---------+-------+------------+-------+
+| model         |  tokens | calls | list spend | share |
++---------------+---------+-------+------------+-------+
+| glm-5.3       | 238.85M | 1,764 |    $128.77 |   57% |
+| glm-5.3-flash |   1.30B | 7,608 |     $96.99 |   43% |
+| glm-5.2       |   6.33M |   223 |      $1.27 |    1% |
+| web-reader    |       0 |     8 |      $0.08 |    0% |
++---------------+---------+-------+------------+-------+
+```
+
+All amounts are computed from **list (pay-as-you-go) prices** in the ledger — what
+the same usage would have cost without the plan — so "plan-covered" shows the value
+your subscription absorbs and "cache savings" shows what prompt-cache pricing saves
+against input list. (Synthetic `--demo` data above.)
 
 ### Times & timezones
 
@@ -158,7 +193,7 @@ Every mode emits one JSON document — trivial to append, chart, or feed to Duck
 ### Tests
 
 ```bash
-bun test        # 24 unit tests — no API key needed (pure functions + demo fixtures)
+bun test        # 31 unit tests — no API key needed (pure functions + demo fixtures)
 ```
 
 ## What it reports
@@ -169,6 +204,7 @@ bun test        # 24 unit tests — no API key needed (pure functions + demo fix
 | MODEL USAGE | Tokens and % share per model across the current 5-hour quota window plus Hour / 24h / 7d / 30d / current-month rolling windows |
 | QUOTA | 5-hour + monthly tool-call limits, usage detail per tool (search-prime, web-reader, zread), reset times |
 | RESET PACKS | Purchased quota-reset packs: available count, nearest expiry, last auto-reset |
+| BILL | Day-level billing ledger: list-price spend, actually billed vs plan-covered, input/cache/output token split, prompt-cache savings, blended cost per 1M tokens, peak day, month-over-month, per-day bars + per-model table |
 
 ## API endpoints
 
@@ -177,6 +213,7 @@ bun test        # 24 unit tests — no API key needed (pure functions + demo fix
 | `GET /api/monitor/usage/quota/limit` | plan level, 5-hour token %, monthly tool-call counters |
 | `GET /api/monitor/usage/model-usage?startTime=&endTime=` | per-model tokens/calls in a time span (intraday precision — the `5h Quota` column queries `nextResetTime − 5h → now`) |
 | `GET /api/biz/customer-package-reset/list?targetType=PERSONAL` | reset-pack inventory |
+| `GET /api/platform-charge-zai/bill/day?customerId=&billingPeriod=YYYY-MM&pageNum=&pageSize=` | day-level billing records; `customerId` auto-discovered from the reset-pack endpoint; paginated (100 rows/page) |
 
 Auth: `Authorization: Bearer <api-key>` — the same key Z.ai issues for the GLM Coding Plan.
 
@@ -187,6 +224,8 @@ Auth: `Authorization: Bearer <api-key>` — the same key Z.ai issues for the GLM
 - Granularity is auto: spans ≤ 48 h return hourly buckets, longer spans daily.
 - `granularity` and bucket labels are server-controlled; the CLI infers bucket width from the span.
 - The 5-hour window is a rolling quota, not a fixed window; reset packs add manual resets.
+- Bill rows are per **(day, model, token-type)** — INPUT / CACHE / OUTPUT price separately; tool products (web-reader, search) bill per `time` unit.
+- The ledger reports list prices; rows covered by a coding-plan package show ~$0 actually billed. `bill` therefore reports list value + how much of it the plan/cache absorbed. Amounts are in the account's billing currency (USD on api.z.ai).
 
 ## Get the GLM Coding Plan
 

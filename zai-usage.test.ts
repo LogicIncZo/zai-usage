@@ -1,7 +1,8 @@
 import { describe, test, expect } from "bun:test";
 import {
   humanTokens, bar, z8Stamp, parseZ8, startOfMonthUTC8, inPeakWindow,
-  fmtWhen, tzShort, pickTZ, renderTable, demoQuota, demoResets, demoModelUsage, checkDecision } from "./zai-usage.ts";
+  fmtWhen, tzShort, pickTZ, renderTable, demoQuota, demoResets, demoModelUsage, checkDecision,
+  billCustomerId, extractCustomerId, prevPeriod, billInsights, rowListCost, demoBillRows } from "./zai-usage.ts";
 
 describe("humanTokens", () => {
   test("formats by magnitude", () => {
@@ -166,5 +167,78 @@ describe("checkDecision", () => {
   });
   test("unknown window falls back to 5h", () => {
     expect(checkDecision(limits, "bogus", 10).left).toBe(53);
+  });
+});
+
+describe("billCustomerId", () => {
+  test("extracts customerId as string (beyond MAX_SAFE_INTEGER)", () => {
+    expect(billCustomerId({ data: { customerId: "82331755979833874" } })).toBe("82331755979833874");
+    expect(billCustomerId({ data: { customerId: 123 } })).toBe("123");
+  });
+  test("extractCustomerId reads raw JSON text without precision loss", () => {
+    expect(extractCustomerId('{"data":{"customerId":82331755979833874}}')).toBe("82331755979833874");
+    expect(extractCustomerId('{"data":{}}')).toBe(null);
+  });
+  test("null when absent", () => {
+    expect(billCustomerId({ data: {} })).toBe(null);
+    expect(billCustomerId(null)).toBe(null);
+  });
+});
+
+describe("prevPeriod", () => {
+  test("crosses the year boundary", () => {
+    expect(prevPeriod("2026-01")).toBe("2025-12");
+    expect(prevPeriod("2026-09")).toBe("2026-08");
+  });
+});
+
+describe("demoBillRows", () => {
+  const rows = demoBillRows("2026-09");
+  test("produces plausible postpaid inference rows", () => {
+    expect(rows.length).toBeGreaterThan(100);
+    expect(rows.every((r: any) => r.billingNo.startsWith("DAY-"))).toBe(true);
+    expect(rows.every((r: any) => r.billingDate.startsWith("2026-09"))).toBe(true);
+    expect(rows.some((r: any) => r.tokenType === "CACHE")).toBe(true);
+    expect(rows.some((r: any) => r.productCode === "web-reader")).toBe(true);
+  });
+});
+
+describe("billInsights", () => {
+  test("aggregates list spend, tokens by type, cache savings, peak day", () => {
+    const rows = [
+      { billingDate: "2026-09-01", modelCode: "glm-5.3", productCode: "inference", usageUnit: "token", costUnit: "kToken",
+        costPrice: "0.001", usageCount: "1000000", apiUsage: 10, tokenType: "INPUT", unpaidAmount: "0", cashAmount: "0", creditPayAmount: "0", giftDeductAmount: "0" },
+      { billingDate: "2026-09-01", modelCode: "glm-5.3", productCode: "inference", usageUnit: "token", costUnit: "kToken",
+        costPrice: "0.0002", usageCount: "3000000", apiUsage: 30, tokenType: "CACHE", unpaidAmount: "0", cashAmount: "0", creditPayAmount: "0", giftDeductAmount: "0" },
+      { billingDate: "2026-09-02", modelCode: "glm-5.3", productCode: "inference", usageUnit: "token", costUnit: "kToken",
+        costPrice: "0.002", usageCount: "500000", apiUsage: 5, tokenType: "OUTPUT", unpaidAmount: "0", cashAmount: "0", creditPayAmount: "0", giftDeductAmount: "0" },
+      { billingDate: "2026-09-02", modelCode: "web-reader", productCode: "web-reader", usageUnit: "time", costUnit: "time",
+        costPrice: "0.01", usageCount: "3", apiUsage: 3, tokenType: "", unpaidAmount: "0", cashAmount: "0", creditPayAmount: "0", giftDeductAmount: "0" },
+    ];
+    const ins = billInsights(rows, "2026-09");
+    expect(ins.days).toBe(2);
+    expect(ins.records).toBe(4);
+    expect(ins.calls).toBe(48);
+    expect(ins.listSpend).toBeCloseTo(1 * 1 + 3000 * 0.0002 + 500 * 0.002 + 0.03, 5); // 2.63
+    expect(ins.inputTokens).toBe(1_000_000);
+    expect(ins.cacheTokens).toBe(3_000_000);
+    expect(ins.outputTokens).toBe(500_000);
+    expect(ins.cacheSavings).toBeCloseTo(3000 * (0.001 - 0.0002), 5); // $2.40 vs input list
+    expect(ins.peakDay?.day).toBe("2026-09-01");
+    expect(ins.peakDay?.list).toBeCloseTo(1 * 1 + 3000 * 0.0002, 5);
+    expect(ins.byModel.find((m) => m.model === "glm-5.3")?.tokens).toBe(4_500_000);
+    expect(ins.byModel.find((m) => m.model === "web-reader")?.calls).toBe(3);
+  });
+  test("month-over-month sign is correct", () => {
+    const mk = (n: number) => Array.from({ length: n }, (_, i) => ({
+      billingDate: `2026-09-0${(i % 9) + 1}`, modelCode: "glm-5.3", productCode: "inference", usageUnit: "token", costUnit: "kToken",
+      costPrice: "0.001", usageCount: "1000000", apiUsage: 1, tokenType: "INPUT", unpaidAmount: "0", cashAmount: "0", creditPayAmount: "0", giftDeductAmount: "0",
+    }));
+    const prev = billInsights(mk(2), "2026-08");
+    const cur = billInsights(mk(5), "2026-09", prev.listSpend);
+    expect(cur.momPct).toBeGreaterThan(0);
+    const down = billInsights(mk(2), "2026-09", billInsights(mk(5), "2026-08").listSpend);
+    expect(down.momPct).toBeLessThan(0);
+    expect(billInsights(mk(2), "2026-09").momPct).toBe(null);
   });
 });

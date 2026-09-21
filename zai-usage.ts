@@ -3,7 +3,7 @@ const KEY = process.env.GLM_API_KEY || process.env.ZAI_API_KEY || process.env.Z_
 
 const BASE = "https://api.z.ai/api/monitor/usage";
 const RESETS_URL = "https://api.z.ai/api/biz/customer-package-reset/list?targetType=PERSONAL";
-export const VERSION = "0.3.1";
+export const VERSION = "0.5.0";
 const args = process.argv.slice(2);
 const jsonOut = args.includes("--json");
 const DEMO = args.includes("--demo");
@@ -116,6 +116,61 @@ export function demoModelUsage(from: string, to: string): any {
     },
   };
 }
+
+// --demo fixtures for platform billing (platform-charge-zai/bill/day): ~3 weeks of plausible rows.
+export function demoBillRows(period: string = "2026-09"): any[] {
+  const mk = (day: number, model: string, tt: string, tokens: number, price: string, calls: number): any => ({
+    billingNo: `DAY-demo-${period}-${String(day).padStart(2, "0")}-${model}-${tt}`,
+    billingDate: `${period}-${String(day).padStart(2, "0")}`,
+    apiKey: "demo0000key", productCode: "inference", productName: "模型推理",
+    secProductCode: "std", secProductName: "标准模型",
+    modelCode: model, modelProductName: `【${model}】模型推理`,
+    billingType: "Postpaid", deductedAmount: "0", originalCostPrice: price,
+    discountRate: "1", costPrice: price, costUnit: "kToken",
+    usageCount: String(tokens), usageExempt: "0", usageUnit: "token",
+    apiUsage: calls, settlementAmount: "0", paidAmount: "0",
+    giftDeductAmount: "0", unpaidAmount: "0", billingStatus: "Paid",
+    tokenType: tt, deductUsage: tokens,
+    packageId: "18618203", packageName: "GLM Coding Lite - Yearly",
+    cashAmount: "0", thirdParty: "0", discountType: "none",
+    paymentType: "Postpaid", creditPayAmount: "0",
+  });
+  const models: Array<[string, string, string, number, number, string]> = [
+    ["glm-5.3-flash", "INPUT", "0.00015", 12_000_000, 420, "3"],
+    ["glm-5.3-flash", "CACHE", "0.00003", 55_000_000, 0, "5"],
+    ["glm-5.3-flash", "OUTPUT", "0.0006", 3_100_000, 0, "7"],
+    ["glm-5.3", "INPUT", "0.001", 2_600_000, 95, "2"],
+    ["glm-5.3", "CACHE", "0.0002", 9_800_000, 0, "4"],
+    ["glm-5.3", "OUTPUT", "0.004", 640_000, 0, "6"],
+    ["glm-5.2", "INPUT", "0.0002", 340_000, 12, "1"],
+  ];
+  const rows: any[] = [];
+  for (let day = 1; day <= 21; day++) {
+    const wk = [0, 6].includes(new Date(Date.UTC(2026, 8, day)).getUTCDay()) ? 0.55 : 1;
+    for (const [model, tt, price, tok, calls, seed] of models) {
+      const f = (0.6 + 0.8 * (((day * 7 + Number(seed) * 3) % 11) / 10)) * wk;
+      rows.push(mk(day, model, tt, Math.round(tok * f), price, Math.max(1, Math.round(calls * f))));
+    }
+  }
+  rows.push({ ...mk(15, "web-reader", "NORMAL", 0, "0.01", 8),
+    productCode: "web-reader", modelCode: "web-reader", modelProductName: "【web-reader】网络读库",
+    usageUnit: "time", costUnit: "time", usageCount: "8", tokenType: "" });
+  return rows;
+}
+
+export function demoBill(period: string = "2026-09", pageNum = 1, pageSize = 100): any {
+  const all = demoBillRows(period);
+  const start = (pageNum - 1) * pageSize;
+  return {
+    code: 200, msg: "Operation successful", success: true,
+    data: {
+      current: pageNum, size: pageSize, total: all.length,
+      pages: Math.ceil(all.length / pageSize) || 1,
+      records: all.slice(start, start + pageSize),
+    },
+  };
+}
+
 const TTY = process.stdout.isTTY || args.includes("--color");
 const c = (code: string, s: string) => (TTY ? `\x1b[${code}m${s}\x1b[0m` : s);
 const bold = (s: string) => c("1", s);
@@ -408,6 +463,182 @@ async function getSummary() {
   }
 }
 
+const BILL_URL = "https://api.z.ai/api/platform-charge-zai/bill/day";
+
+export function billCustomerId(resets: any): string | null {
+  const id = resets?.data?.customerId;
+  if (id == null) return null;
+  const s = String(id).trim();
+  return /^\d+$/.test(s) ? s : null;
+}
+
+// customerId exceeds Number.MAX_SAFE_INTEGER, so it must be lifted from the raw
+// response text — JSON.parse would silently round it to a different account.
+export function extractCustomerId(raw: string): string | null {
+  const m = raw.match(/"customerId"\s*:\s*(\d+)/);
+  return m ? m[1] : null;
+}
+
+const numOf = (v: any): number => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+
+export function rowListCost(r: any): number {
+  const div = r.costUnit === "kToken" ? 1000 : 1;
+  return numOf(r.usageCount) * numOf(r.costPrice) / div;
+}
+
+export function prevPeriod(period: string): string {
+  const [y, m] = period.split("-").map(Number);
+  return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`;
+}
+
+export interface BillInsights {
+  period: string; records: number; days: number;
+  listSpend: number; cashPaid: number; creditPaid: number; giftCovered: number;
+  calls: number; tokens: number; inputTokens: number; cacheTokens: number; outputTokens: number;
+  cacheSavings: number; cacheListCost: number;
+  costPerMTok: number | null;
+  byDay: Array<{ day: string; list: number; calls: number; tokens: number }>;
+  byModel: Array<{ model: string; list: number; calls: number; tokens: number }>;
+  peakDay: { day: string; list: number } | null;
+  prevListSpend: number | null; momPct: number | null;
+}
+
+export function billInsights(rows: any[], period: string, prevListSpend: number | null = null): BillInsights {
+  let listSpend = 0, cashPaid = 0, creditPaid = 0, giftCovered = 0, calls = 0;
+  let inputTokens = 0, cacheTokens = 0, outputTokens = 0;
+  let cacheSavings = 0, cacheListCost = 0;
+  const dayMap = new Map<string, { list: number; calls: number; tokens: number }>();
+  const modelMap = new Map<string, { list: number; calls: number; tokens: number }>();
+  const inputPriceByModel = new Map<string, number>();
+  const cacheRows: Array<{ model: string; tokens: number; price: number }> = [];
+  for (const r of rows) {
+    const list = rowListCost(r);
+    listSpend += list;
+    cashPaid += numOf(r.cashAmount);
+    creditPaid += numOf(r.creditPayAmount);
+    giftCovered += numOf(r.giftDeductAmount);
+    calls += numOf(r.apiUsage);
+    const model = String(r.modelCode || r.productCode || "other");
+    const day = String(r.billingDate || "");
+    const tokens = r.usageUnit === "token" ? numOf(r.usageCount) : 0;
+    if (r.tokenType === "INPUT") {
+      inputTokens += tokens;
+      inputPriceByModel.set(model, Math.max(inputPriceByModel.get(model) ?? 0, numOf(r.costPrice)));
+    } else if (r.tokenType === "CACHE") {
+      cacheTokens += tokens;
+      cacheRows.push({ model, tokens, price: numOf(r.costPrice) });
+    } else if (r.tokenType === "OUTPUT") {
+      outputTokens += tokens;
+    }
+    const d = dayMap.get(day) ?? { list: 0, calls: 0, tokens: 0 };
+    d.list += list; d.calls += numOf(r.apiUsage); d.tokens += tokens;
+    dayMap.set(day, d);
+    const m = modelMap.get(model) ?? { list: 0, calls: 0, tokens: 0 };
+    m.list += list; m.calls += numOf(r.apiUsage); m.tokens += tokens;
+    modelMap.set(model, m);
+  }
+  for (const cr of cacheRows) {
+    const ip = inputPriceByModel.get(cr.model) ?? 0;
+    const cacheCost = (cr.tokens / 1000) * cr.price;
+    cacheListCost += cacheCost;
+    if (ip > cr.price) cacheSavings += (cr.tokens / 1000) * (ip - cr.price);
+  }
+  const tokens = inputTokens + cacheTokens + outputTokens;
+  const byDay = [...dayMap.entries()].map(([day, v]) => ({ day, ...v })).sort((a, b) => a.day.localeCompare(b.day));
+  const byModel = [...modelMap.entries()].map(([model, v]) => ({ model, ...v })).sort((a, b) => b.list - a.list);
+  const peakDay = byDay.reduce<{ day: string; list: number } | null>((best, d) => (!best || d.list > best.list ? { day: d.day, list: d.list } : best), null);
+  const momPct = prevListSpend != null && prevListSpend > 0 ? ((listSpend - prevListSpend) / prevListSpend) * 100 : null;
+  return {
+    period, records: rows.length, days: byDay.length,
+    listSpend, cashPaid, creditPaid, giftCovered, calls, tokens, inputTokens, cacheTokens, outputTokens,
+    cacheSavings, cacheListCost,
+    costPerMTok: tokens > 0 ? listSpend / (tokens / 1e6) : null,
+    byDay, byModel, peakDay, prevListSpend, momPct,
+  };
+}
+
+async function collectBill(customerId: string, period: string): Promise<any[]> {
+  if (DEMO) return demoBillRows(period);
+  const out: any[] = [];
+  const pageSize = 100;
+  for (let page = 1; page <= 60; page++) {
+    const url = `${BILL_URL}?customerId=${customerId}&billingPeriod=${period}&pageNum=${page}&pageSize=${pageSize}`;
+    const d = (await api(url)).data || {};
+    const recs = d.records || [];
+    out.push(...recs);
+    if (page >= (d.pages || 1) || !recs.length) break;
+  }
+  return out;
+}
+
+const money = (n: number): string => `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+async function getBill() {
+  const periodArg = args.find((a, i) => i > 0 && /^\d{4}-\d{2}$/.test(a));
+  if (periodArg && !/^202[0-9]-(0[1-9]|1[0-2])$/.test(periodArg)) {
+    console.error(`Invalid billing period "${periodArg}" — expected YYYY-MM.`);
+    process.exit(1);
+  }
+  const period = periodArg || z8Date().slice(0, 7);
+  let customerId: string | null = null;
+  let rows: any[];
+  let prevRows: any[] | null = null;
+  if (DEMO) {
+    customerId = extractCustomerId(JSON.stringify(demoResets()));
+    rows = demoBillRows(period);
+    const prev = prevPeriod(period);
+    prevRows = demoBillRows(prev).map((r) => ({
+      ...r,
+      billingDate: r.billingDate.replace(/^\d{4}-\d{2}/, prev),
+      usageCount: String(Math.round(Number(r.usageCount) * 0.72)),
+      apiUsage: Math.round(Number(r.apiUsage) * 0.72),
+    }));
+  } else {
+    const res = await fetch(RESETS_URL, { headers: { Authorization: `Bearer ${KEY}` } });
+    customerId = extractCustomerId(await res.text());
+    if (customerId == null) {
+      console.error("Could not discover customerId from customer-package-reset/list — cannot call bill/day.");
+      process.exit(1);
+    }
+    rows = await collectBill(customerId, period);
+    prevRows = await collectBill(customerId, prevPeriod(period));
+  }
+  const prevIns = prevRows ? billInsights(prevRows, prevPeriod(period)) : null;
+  const ins = billInsights(rows, period, prevIns ? prevIns.listSpend : null);
+  if (jsonOut) {
+    console.log(JSON.stringify({ fetchedAt: new Date().toISOString(), period, customerId, rows, insights: ins }, null, 2));
+    return;
+  }
+  console.log(bold(`BILL ${period}`) + dim(`  (platform-charge-zai/bill/day · ${ins.records} rows · ${ins.days} days · UTC+8 billing days)`));
+  if (!ins.records) {
+    console.log(dim("  No billing records for this period (plan may predate it, or usage was fully covered upstream)."));
+    return;
+  }
+  const billed = ins.cashPaid + ins.creditPaid + ins.giftCovered;
+  console.log(`  List-price spend   ${money(ins.listSpend)}${dim("  (pay-as-you-go list value of this usage)")}`);
+  console.log(`  Actually billed    ${money(billed)}${dim(`  (cash ${money(ins.cashPaid)} · credits ${money(ins.creditPaid)} · gift ${money(ins.giftCovered)})`)}`);
+  console.log(`  Plan-covered       ${money(Math.max(0, ins.listSpend - billed))}${dim("  (list value absorbed by your coding-plan package)")}`);
+  console.log(`  Calls ${ins.calls.toLocaleString("en-US")} · Tokens ${humanTokens(ins.tokens)}${dim(`  (in ${humanTokens(ins.inputTokens)} · cache ${humanTokens(ins.cacheTokens)} · out ${humanTokens(ins.outputTokens)})`)}`);
+  if (ins.cacheSavings > 0 && ins.cacheSavings + ins.cacheListCost > 0) {
+    const off = Math.round((1 - ins.cacheListCost / (ins.cacheSavings + ins.cacheListCost)) * 100);
+    console.log(`  Cache savings      ${money(ins.cacheSavings)}${dim(`  (cached tokens billed ${off}% below input list)`)}`);
+  }
+  if (ins.costPerMTok != null) console.log(`  Blended list cost  ${money(ins.costPerMTok)} per 1M tokens`);
+  if (ins.peakDay) console.log(`  Peak day           ${ins.peakDay.day}  (${money(ins.peakDay.list)})`);
+  if (ins.momPct != null && ins.prevListSpend != null) {
+    console.log(`  MoM                ${ins.momPct >= 0 ? "+" : ""}${ins.momPct.toFixed(1)}%${dim(`  (${money(ins.prevListSpend)} across ${prevPeriod(period)})`)}`);
+  }
+  console.log("");
+  const maxList = Math.max(...ins.byDay.map((d) => d.list), 1e-9);
+  for (const d of ins.byDay) {
+    const w = Math.max(d.list > 0 ? 1 : 0, Math.round((d.list / maxList) * 28));
+    console.log(`${d.day}  ${money(d.list).padStart(9)}  ${String(d.calls).padStart(6)} calls  ${humanTokens(d.tokens).padStart(8)} tokens  ${"█".repeat(w)}`);
+  }
+  console.log("");
+  const mrows = ins.byModel.map((m) => [m.model, humanTokens(m.tokens), m.calls.toLocaleString("en-US"), money(m.list), `${Math.round((m.list / ins.listSpend) * 100)}%`]);
+  console.log(renderTable(["model", "tokens", "calls", "list spend", "share"], mrows, ["l", "r", "r", "r", "r"]));
+}
+
 export function printHelp(): void {
   console.log(`zai-usage ${VERSION} — Z.ai GLM Coding Plan usage CLI
 
@@ -419,6 +650,9 @@ Modes:
   usage [YYYY-MM-DD]   hour-by-hour model usage (default: today, UTC+8)
   usage --from "..." --to "..."   arbitrary range (max 31 days)
   check                agent gate: exit 0 if quota left >= --min%, 1 if low, 2 if error
+  bill [YYYY-MM]       daily platform billing (platform-charge-zai/bill/day) for a month:
+                       list vs actually-billed vs plan-covered, tokens by type, cache
+                       savings, blended $/1M tokens, per-day bars, per-model table, MoM
 
 Flags:
   --json               machine-readable output (any mode)
@@ -430,6 +664,7 @@ Flags:
   --version            print version
   --help               this text
 
+Endpoints: api/monitor/usage, api/biz/customer-package-reset, api/platform-charge-zai/bill/day.
 Key: GLM_API_KEY (or ZAI_API_KEY / Z_AI_API_KEY) environment variable.
 API protocol times are UTC+8; display times follow --tz / TZ.
 Repo: https://github.com/LogicIncZo/zai-usage`);
@@ -479,6 +714,8 @@ export async function main() {
     await getSummary();
   } else if (args[0] === "usage" || args.includes("--usage")) {
     await getModelUsage();
+  } else if (args[0] === "bill") {
+    await getBill();
   } else if (args[0] === "check") {
     await runCheck();
   } else {
