@@ -2,7 +2,8 @@ import { describe, test, expect } from "bun:test";
 import {
   humanTokens, bar, z8Stamp, parseZ8, startOfMonthUTC8, inPeakWindow,
   fmtWhen, tzShort, pickTZ, renderTable, demoQuota, demoResets, demoModelUsage, checkDecision,
-  billCustomerId, extractCustomerId, prevPeriod, nextPeriod, billInsights, benefitsSummary, rowListCost, demoBillRows } from "./zai-usage.ts";
+  billCustomerId, extractCustomerId, prevPeriod, nextPeriod, billInsights, benefitsSummary, rowListCost, demoBillRows,
+  z8Day, spansFor, describePeriod, buildTips, demoRowsScaled } from "./zai-usage.ts";
 
 describe("humanTokens", () => {
   test("formats by magnitude", () => {
@@ -276,5 +277,97 @@ describe("benefitsSummary", () => {
     expect(sum.months).toBe(0);
     expect(sum.firstMonth).toBe(null);
     expect(sum.costPerMTok).toBe(null);
+  });
+});
+
+describe("z8Day", () => {
+  test("offsets days in UTC+8", () => {
+    const base = new Date("2026-09-21T10:00:00Z"); // 18:00 +08
+    expect(z8Day(0, base)).toBe("2026-09-21");
+    expect(z8Day(-1, base)).toBe("2026-09-20");
+    expect(z8Day(0, new Date("2026-09-21T16:30:00Z"))).toBe("2026-09-22"); // 00:30 +08
+    expect(z8Day(-1, new Date("2026-03-01T00:00:00Z"))).toBe("2026-02-28"); // month roll
+  });
+});
+
+describe("spansFor", () => {
+  test("week: 7-day current vs prior 7", () => {
+    const sp = spansFor("week");
+    expect(sp.curTo).toBe(z8Day(0));
+    expect(sp.curFrom).toBe(z8Day(-6));
+    expect(sp.prevTo).toBe(z8Day(-7));
+    expect(sp.prevFrom).toBe(z8Day(-13));
+  });
+  test("month: MTD vs same span last month", () => {
+    const sp = spansFor("month");
+    expect(sp.curFrom.endsWith("-01")).toBe(true);
+    expect(sp.curTo).toBe(z8Day(0));
+    const pm = sp.prevFrom.slice(0, 7);
+    expect(pm < sp.curFrom.slice(0, 7)).toBe(true);
+    expect(Number(sp.prevTo.slice(8, 10))).toBeLessThanOrEqual(31);
+  });
+});
+
+describe("describePeriod + buildTips", () => {
+  const mk = (day: string, model: string, tt: string, tokens: number, price: string, calls: number) => ({
+    billingDate: day, modelCode: model, productCode: "inference", usageUnit: "token", costUnit: "kToken",
+    costPrice: price, usageCount: String(tokens), apiUsage: calls, tokenType: tt,
+    unpaidAmount: "0", cashAmount: "0", creditPayAmount: "0", giftDeductAmount: "0",
+  });
+  const week = (cachePrice: string) => billInsights([
+    mk("2026-09-15", "glm-5.3-flash", "INPUT", 5_000_000, "0.00015", 100),
+    mk("2026-09-15", "glm-5.3-flash", "CACHE", 20_000_000, cachePrice, 0),
+    mk("2026-09-15", "glm-5.3", "INPUT", 3_000_000, "0.001", 10),
+  ], "2026-09");
+  test("describePeriod behavioral stats", () => {
+    const st = describePeriod(week("0.00003"), "2026-09-15", "2026-09-21");
+    expect(st.spanDays).toBe(7);
+    expect(st.cacheShare).toBeCloseTo(20_000_000 / 28_000_000, 5);
+    expect(st.nonFlashShare).toBeCloseTo(3_000_000 / 28_000_000, 5);
+    expect(st.topModel?.model).toBe("glm-5.3-flash");
+    expect(st.callsPerActiveDay).toBe(110); // round(110 calls / 1 active day)
+    expect(st.biggestDayShare).toBe(1); // single active day
+  });
+  test("peak-window tip fires above 30%", () => {
+    const cur = describePeriod(week("0.00003"), "2026-09-15", "2026-09-21");
+    const tips = buildTips(cur, null, { peak: { share: 0.41, sampleTokens: 1e9 }, packs: null, kind: "week" });
+    expect(tips.some((t) => t.text.includes("peak window"))).toBe(true);
+  });
+  test("cache-drop tip fires on falling cache share", () => {
+    const prev = describePeriod(week("0.00003"), "2026-09-08", "2026-09-14"); // cache 20/28 = 71.4%
+    const dropped = [
+      mk("2026-09-15", "glm-5.3-flash", "INPUT", 5_000_000, "0.00015", 100),
+      mk("2026-09-15", "glm-5.3-flash", "CACHE", 10_000_000, "0.00003", 0),
+      mk("2026-09-15", "glm-5.3", "INPUT", 3_000_000, "0.001", 10),
+    ];
+    const cur = describePeriod(billInsights(dropped, "2026-09"), "2026-09-15", "2026-09-21"); // 10/18 = 55.6%
+    const tips = buildTips(cur, prev, { peak: null, packs: null, kind: "week" });
+    expect(tips.some((t) => t.text.includes("Cache share"))).toBe(true);
+  });
+  test("reset-pack tip fires on near expiry, quiet otherwise", () => {
+    const spread = billInsights([
+      mk("2026-09-15", "glm-5.3-flash", "CACHE", 7_000_000, "0.00003", 30),
+      mk("2026-09-16", "glm-5.3-flash", "CACHE", 7_000_000, "0.00003", 30),
+      mk("2026-09-17", "glm-5.3-flash", "CACHE", 7_000_000, "0.00003", 30),
+    ], "2026-09");
+    const cur = describePeriod(spread, "2026-09-15", "2026-09-21"); // 3 active days, even load, cache 100%, 1 model
+    const near = z8Stamp(new Date(Date.now() + 10 * 86_400_000)).slice(0, 10);
+    const packs = { data: { fiveHourResets: [{ available: true, expireTime: `${near} 23:59:59` }], weekResets: [] } };
+    expect(buildTips(cur, null, { peak: null, packs, kind: "week" }).some((t) => t.text.includes("reset pack"))).toBe(true);
+    const none = { data: { fiveHourResets: [], weekResets: [] } };
+    expect(buildTips(cur, null, { peak: null, packs: none, kind: "week" }).some((t) => t.icon === "✅")).toBe(true);
+    const bal = billInsights([
+      mk("2026-09-15", "glm-5.3-flash", "INPUT", 2_500_000, "0.00015", 10),
+      mk("2026-09-16", "glm-5.3", "INPUT", 2_500_000, "0.001", 10),
+      mk("2026-09-17", "glm-5.3", "INPUT", 2_500_000, "0.001", 10),
+      mk("2026-09-18", "glm-5.3-flash", "INPUT", 2_500_000, "0.00015", 10),
+    ], "2026-09");
+    expect(buildTips(bal, null, { peak: null, packs: none, kind: "week" })).toEqual([{ icon: "✅", text: expect.stringContaining("No waste") }]);
+  });
+  test("demoRowsScaled shrinks usage", () => {
+    const base = demoBillRows("2026-09");
+    const scaled = demoRowsScaled("2026-09", 0.5);
+    expect(scaled.length).toBe(base.length);
+    expect(Number(scaled[0].usageCount)).toBe(Math.round(Number(base[0].usageCount) * 0.5));
   });
 });

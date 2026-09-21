@@ -3,7 +3,7 @@ const KEY = process.env.GLM_API_KEY || process.env.ZAI_API_KEY || process.env.Z_
 
 const BASE = "https://api.z.ai/api/monitor/usage";
 const RESETS_URL = "https://api.z.ai/api/biz/customer-package-reset/list?targetType=PERSONAL";
-export const VERSION = "0.6.0";
+export const VERSION = "0.7.0";
 const args = process.argv.slice(2);
 const jsonOut = args.includes("--json");
 const DEMO = args.includes("--demo");
@@ -746,6 +746,285 @@ async function getBenefits() {
   }
 }
 
+// ---- Behavioral insights (week / month) ----
+
+type Kind = "week" | "month";
+
+export function z8Day(offsetDays: number, base: Date = new Date()): string {
+  return z8Stamp(new Date(base.getTime() + offsetDays * 86_400_000)).slice(0, 10);
+}
+
+export function spansFor(kind: Kind): { curFrom: string; curTo: string; prevFrom: string; prevTo: string } {
+  if (kind === "week") {
+    return { curFrom: z8Day(-6), curTo: z8Day(0), prevFrom: z8Day(-13), prevTo: z8Day(-7) };
+  }
+  const today = z8Day(0);
+  const cm = today.slice(0, 7);
+  const dayNum = Number(today.slice(8, 10));
+  const pm = prevPeriod(cm);
+  const dim = new Date(Number(pm.slice(0, 4)), Number(pm.slice(5, 7)), 0).getDate();
+  return { curFrom: `${cm}-01`, curTo: today, prevFrom: `${pm}-01`, prevTo: `${pm}-${String(Math.min(dayNum, dim)).padStart(2, "0")}` };
+}
+
+export interface PeriodStats {
+  from: string; to: string; spanDays: number; days: number;
+  tokens: number; calls: number; input: number; cache: number; output: number;
+  cacheShare: number; outputShare: number; nonFlashShare: number;
+  listSpend: number; billed: number;
+  callsPerActiveDay: number; biggestDayShare: number;
+  topModel: { model: string; share: number } | null;
+}
+
+export function describePeriod(i: BillInsights, from: string, to: string): PeriodStats {
+  const spanDays = Math.round((parseZ8(`${to} 12:00:00`).getTime() - parseZ8(`${from} 12:00:00`).getTime()) / 86_400_000) + 1;
+  const tokens = i.tokens || 0;
+  const flash = i.byModel.filter((m) => m.model.includes("flash")).reduce((s, m) => s + m.tokens, 0);
+  const top = [...i.byModel].sort((a, b) => b.tokens - a.tokens)[0];
+  return {
+    from, to, spanDays, days: i.days,
+    tokens, calls: i.calls, input: i.inputTokens, cache: i.cacheTokens, output: i.outputTokens,
+    cacheShare: tokens ? i.cacheTokens / tokens : 0,
+    outputShare: tokens ? i.outputTokens / tokens : 0,
+    nonFlashShare: tokens ? 1 - flash / tokens : 0,
+    listSpend: i.listSpend,
+    billed: i.cashPaid + i.creditPaid + i.giftCovered,
+    callsPerActiveDay: i.days ? Math.round(i.calls / i.days) : 0,
+    biggestDayShare: tokens && i.byDay.length ? Math.max(...i.byDay.map((d) => d.tokens)) / tokens : 0,
+    topModel: top && tokens ? { model: top.model, share: top.tokens / tokens } : null,
+  };
+}
+
+export interface Tip { icon: string; text: string }
+const pctS = (x: number) => `${Math.round(x * 100)}%`;
+
+export function buildTips(
+  cur: PeriodStats, prev: PeriodStats | null,
+  ctx: { peak: { share: number; sampleTokens: number } | null; packs: any; kind: Kind },
+): Tip[] {
+  const tips: Tip[] = [];
+  const push = (icon: string, text: string) => { if (tips.length < 4) tips.push({ icon, text }); };
+
+  // 1. Reset packs expiring unused (factual, high signal)
+  const rd = ctx.packs?.data || {};
+  const avail = [...(rd.fiveHourResets || []), ...(rd.weekResets || [])].filter((r: any) => r.available);
+  const nearest = avail.map((r: any) => parseZ8(r.expireTime).getTime()).sort((a, b) => a - b)[0];
+  if (nearest) {
+    const daysLeft = Math.round((nearest - Date.now()) / 86_400_000);
+    if (daysLeft <= 60) {
+      const five = (rd.fiveHourResets || []).filter((r: any) => r.available).length;
+      const week = (rd.weekResets || []).filter((r: any) => r.available).length;
+      push("📦", `${avail.length} reset pack${avail.length === 1 ? "" : "s"} (5h×${five}, weekly×${week}) sit unused — nearest expires ${dayLabel(z8Stamp(new Date(nearest)).slice(0, 10))} (in ${daysLeft}d). Schedule a heavy batch day before they lapse.`);
+    }
+  }
+
+  // 2. Peak-window burn (48h hourly sample)
+  if (ctx.peak && ctx.peak.share >= 0.3 && ctx.peak.sampleTokens > 1e7) {
+    push("🌙", `${pctS(ctx.peak.share)} of the last 48h tokens burned in peak window (14:00–18:00 UTC+8 Mon–Fri) — GLM-5.3 costs 3× quota then, flash 1.2×; shift batch jobs off-peak.`);
+  }
+
+  // 3. Cache-share drop
+  if (prev && cur.tokens > 1e7 && prev.tokens > 1e7 && cur.cacheShare < prev.cacheShare - 0.03) {
+    push("🧠", `Cache share fell ${pctS(prev.cacheShare)} → ${pctS(cur.cacheShare)} — keep system prompts stable and avoid mid-thread edits; every invalidated prefix re-reads at full input price.`);
+  }
+
+  // 4. Premium-model drift
+  if (prev && cur.nonFlashShare > 0.08 && cur.nonFlashShare > prev.nonFlashShare + 0.02) {
+    push("🔀", `Non-flash models took ${pctS(cur.nonFlashShare)} of tokens (was ${pctS(prev.nonFlashShare)}) — flash handles most coding traffic at 0.4× peak quota; route heavy agentic loops to it.`);
+  }
+
+  // 5. Many-small-turns pattern
+  if (prev && prev.calls > 500 && cur.calls > 0) {
+    const callsUp = cur.calls / prev.calls - 1;
+    const tpcCur = cur.tokens / cur.calls, tpcPrev = prev.tokens / prev.calls;
+    const tpcDown = tpcPrev ? 1 - tpcCur / tpcPrev : 0;
+    if (callsUp > 0.15 && tpcDown > 0.15) {
+      push("🧩", `Calls +${Math.round(callsUp * 100)}% but tokens/call −${Math.round(tpcDown * 100)}% — many small turns; batching related edits into one pass cuts repeated context re-reads.`);
+    }
+  }
+
+  // 6. Single-day concentration
+  if (cur.biggestDayShare > 0.35 && cur.spanDays >= 5) {
+    push("📊", `One day carried ${pctS(cur.biggestDayShare)} of the period's tokens — evening out load avoids 5h-window walls and reset dead time.`);
+  }
+
+  // 7. Output spike
+  if (prev && cur.outputShare > 0.03 && cur.outputShare > prev.outputShare * 1.5) {
+    push("💬", `Output share jumped to ${pctS(cur.outputShare)} (was ${pctS(prev.outputShare)}) — generation is the priciest token class; tighten answers or draft with flash.`);
+  }
+
+  // 8. Month pace
+  if (ctx.kind === "month" && cur.spanDays >= 3 && prev && prev.listSpend > 0 && cur.listSpend > 0) {
+    const dimCur = new Date(Number(cur.to.slice(0, 4)), Number(cur.to.slice(5, 7)), 0).getDate();
+    const proj = (cur.listSpend / cur.spanDays) * dimCur;
+    push("📅", `MTD list value ${money(cur.listSpend)} is ${Math.round((cur.listSpend / prev.listSpend) * 100)}% of the same span last month — full-month pace ≈ ${money(proj)}.`);
+  }
+
+  if (!tips.length) push("✅", "No waste detected — cache share healthy, model mix lean, no packs expiring, load well spread.");
+  return tips;
+}
+
+async function peakShare48h(): Promise<{ share: number; sampleTokens: number } | null> {
+  if (DEMO) return { share: 0.41, sampleTokens: 1.1e9 };
+  try {
+    const from = z8Stamp(new Date(Date.now() - 48 * 3_600_000));
+    const to = z8Stamp(new Date());
+    const url = `${BASE}/model-usage?startTime=${encodeURIComponent(from).replace(/%20/g, "+")}&endTime=${encodeURIComponent(to).replace(/%20/g, "+")}`;
+    const d = (await api(url)).data || {};
+    const times: string[] = d.x_time || [];
+    const toks: number[] = d.tokensUsage || [];
+    if (!times.length || d.granularity !== "hourly") return null;
+    let peak = 0, total = 0;
+    times.forEach((t, i) => {
+      const tok = toks[i] || 0;
+      total += tok;
+      if (inPeakWindow(parseZ8(t.length === 16 ? `${t}:00` : t))) peak += tok;
+    });
+    return total > 0 ? { share: peak / total, sampleTokens: total } : null;
+  } catch {
+    return null;
+  }
+}
+
+export function demoRowsScaled(period: string, factor: number): any[] {
+  return demoBillRows(period).map((r) => ({
+    ...r,
+    usageCount: String(Math.round(Number(r.usageCount) * factor)),
+    apiUsage: Math.max(1, Math.round(Number(r.apiUsage) * factor)),
+  }));
+}
+
+function insightsPayload(kind: Kind, cur: PeriodStats, prev: PeriodStats | null, peak: { share: number; sampleTokens: number } | null, packs: any) {
+  const rd = packs?.data || {};
+  const avail = [...(rd.fiveHourResets || []), ...(rd.weekResets || [])].filter((r: any) => r.available);
+  const nearestExpiry = avail.length ? z8Stamp(new Date(Math.min(...avail.map((r: any) => parseZ8(r.expireTime).getTime())))).slice(0, 10) : null;
+  return {
+    kind,
+    current: cur,
+    previous: prev,
+    deltas: prev && prev.tokens ? {
+      tokensPct: Math.round((cur.tokens / prev.tokens - 1) * 100),
+      callsPct: Math.round((cur.calls / prev.calls - 1) * 100),
+      cacheSharePts: Math.round((cur.cacheShare - prev.cacheShare) * 100),
+      listSpendPct: Math.round((cur.listSpend / prev.listSpend - 1) * 100),
+    } : null,
+    peakSample: peak,
+    resetPacks: { fiveHourAvailable: (rd.fiveHourResets || []).filter((r: any) => r.available).length, weekAvailable: (rd.weekResets || []).filter((r: any) => r.available).length, nearestExpiry },
+  };
+}
+
+async function aiCoach(payload: unknown, demo: boolean): Promise<string | null> {
+  if (demo) {
+    return "Token burn is up modestly, driven almost entirely by flash at a stable cache share — the cheap path. Peaks are real but contained, and nothing is quietly expiring.\n- Move the two heaviest daily blocks 30 minutes apart to dodge 5h-window walls\n- Two weekly reset packs expire Nov 7 unused — schedule a heavy batch day before then\n- 41% of sampled tokens burned in peak window; cron before 14:00 UTC+8 costs 1/3 the quota";
+  }
+  const base = process.env.GLM_BASE_URL || "https://api.z.ai/api/coding/paas/v4";
+  try {
+    const res = await fetch(`${base}/chat/completions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${KEY}`, "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(25_000),
+      body: JSON.stringify({
+        model: "glm-5.3-flash",
+        thinking: { type: "disabled" },
+        temperature: 0.3,
+        max_tokens: 400,
+        messages: [
+          { role: "system", content: "You are the usage coach inside zai-usage, a terminal CLI for the Z.ai GLM Coding Plan. You receive aggregate usage metrics only (never message content). Reply with: one 2-sentence trend narrative, then at most 3 concrete one-line tips. Plain text, no markdown, no emoji, no praise, no filler. Max 120 words." },
+          { role: "user", content: JSON.stringify(payload) },
+        ],
+      }),
+    });
+    if (!res.ok) return null;
+    const body = await res.json();
+    const text: string | undefined = body?.choices?.[0]?.message?.content?.trim();
+    return text && text.length > 20 ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+const indentBlock = (t: string) => t.split("\n").map((l) => `  ${l}`).join("\n");
+function dayLabel(iso: string): string {
+  const m = Number(iso.slice(5, 7));
+  return `${MONTHS_SHORT[m - 1]} ${Number(iso.slice(8, 10))}`;
+}
+
+async function getInsights(kind: Kind) {
+  const noAi = args.includes("--no-ai");
+  const sp = spansFor(kind);
+  let customerId: string | null = null;
+  let cur: PeriodStats, prev: PeriodStats | null = null;
+  let peak: { share: number; sampleTokens: number } | null = null;
+  let packs: any = null;
+
+  if (DEMO) {
+    customerId = extractCustomerId(JSON.stringify(demoResets()));
+    const monthsCache = new Map<string, any[]>();
+    const getMonth = (m: string) => m === "2026-09" ? demoBillRows(m) : demoRowsScaled(m, 0.72);
+    const inRange = (rows: any[], a: string, b: string) => rows.filter((r) => r.billingDate >= a && r.billingDate <= b);
+    const monthOf = (m: string) => monthsCache.has(m) ? monthsCache.get(m)! : (monthsCache.set(m, getMonth(m)), monthsCache.get(m)!);
+    cur = describePeriod(billInsights(inRange(monthOf(sp.curFrom.slice(0, 7)), sp.curFrom, sp.curTo), sp.curFrom.slice(0, 7)), sp.curFrom, sp.curTo);
+    prev = describePeriod(billInsights(inRange(monthOf(sp.prevFrom.slice(0, 7)), sp.prevFrom, sp.prevTo), sp.prevFrom.slice(0, 7)), sp.prevFrom, sp.prevTo);
+    peak = await peakShare48h();
+    packs = demoResets();
+  } else {
+    const res = await fetch(RESETS_URL, { headers: { Authorization: `Bearer ${KEY}` } });
+    customerId = extractCustomerId(await res.text());
+    if (customerId == null) {
+      console.error("Could not discover customerId from customer-package-reset/list.");
+      process.exit(1);
+    }
+    packs = await api(RESETS_URL);
+    peak = await peakShare48h();
+    const cache = new Map<string, Promise<any[]>>();
+    const getMonth = (m: string) => {
+      if (!cache.has(m)) cache.set(m, collectBill(customerId!, m));
+      return cache.get(m)!;
+    };
+    const inRange = async (a: string, b: string) => {
+      const months = [...new Set([a.slice(0, 7), b.slice(0, 7)])];
+      return (await Promise.all(months.map((m) => getMonth(m)))).flat()
+        .filter((r) => r.billingDate >= a && r.billingDate <= b);
+    };
+    const curRows = await inRange(sp.curFrom, sp.curTo);
+    const prevRows = await inRange(sp.prevFrom, sp.prevTo);
+    cur = describePeriod(billInsights(curRows, sp.curFrom.slice(0, 7)), sp.curFrom, sp.curTo);
+    prev = prevRows.length ? describePeriod(billInsights(prevRows, sp.prevFrom.slice(0, 7)), sp.prevFrom, sp.prevTo) : null;
+  }
+
+  const payload = insightsPayload(kind, cur, prev, peak, packs);
+  const tips = buildTips(cur, prev, { peak, packs, kind });
+  const aiWanted = !noAi && (!!KEY || DEMO);
+  const ai = aiWanted ? await aiCoach(payload, DEMO) : null;
+
+  if (jsonOut) {
+    console.log(JSON.stringify({ fetchedAt: new Date().toISOString(), kind, customerId, spans: sp, current: cur, previous: prev, peakSample: peak, tips, ai, aiRequested: !noAi }, null, 2));
+    return;
+  }
+
+  const title = kind === "week" ? "LAST WEEK" : "MONTH TO DATE";
+  console.log(bold(title) + dim(`  (${dayLabel(sp.curFrom)} → ${dayLabel(sp.curTo)} vs ${dayLabel(sp.prevFrom)} → ${dayLabel(sp.prevTo)} · UTC+8 days)`));
+  if (!cur.tokens && !(prev && prev.tokens)) {
+    console.log(dim("  No usage in either period."));
+    return;
+  }
+  const dLine = (a: number, b: number) => (b ? `(${a >= b ? "+" : ""}${Math.round((a / b - 1) * 100)}%)` : "(new)");
+  console.log(`  tokens      ${humanTokens(prev?.tokens ?? 0)} → ${humanTokens(cur.tokens)}  ${dLine(cur.tokens, prev?.tokens ?? 0)}   ·  calls ${((prev?.calls ?? 0)).toLocaleString("en-US")} → ${cur.calls.toLocaleString("en-US")}  ${dLine(cur.calls, prev?.calls ?? 0)}`);
+  console.log(`  cache share ${pctS(prev?.cacheShare ?? 0)} → ${pctS(cur.cacheShare)}   ·  output share ${pctS(prev?.outputShare ?? 0)} → ${pctS(cur.outputShare)}`);
+  console.log(`  list value  ${money(prev?.listSpend ?? 0)} → ${money(cur.listSpend)}  ${dLine(cur.listSpend, prev?.listSpend ?? 0)}   ·  actually paid ${money(cur.billed)}`);
+  console.log(`  active days ${cur.days}/${cur.spanDays} · biggest day ${pctS(cur.biggestDayShare)} of tokens · calls/active-day ${cur.callsPerActiveDay.toLocaleString("en-US")}${cur.topModel ? ` · top ${cur.topModel.model} ${pctS(cur.topModel.share)}` : ""}`);
+  if (cur.topModel && prev?.topModel && cur.topModel.model !== prev.topModel.model) {
+    console.log(dim(`  top model changed: ${prev.topModel.model} (${pctS(prev.topModel.share)}) → ${cur.topModel.model} (${pctS(cur.topModel.share)})`));
+  }
+  console.log("");
+  if (ai) {
+    console.log(bold("AI COACH") + dim("  (glm-5.3-flash · aggregate metrics only — never prompts/code · ~2K tokens of your quota)"));
+    console.log(indentBlock(ai));
+  } else {
+    console.log(bold("TIPS") + dim(noAi ? "  (--no-ai)" : "  (rule-based fallback — AI coach unavailable)"));
+    for (const t of tips) console.log(`  ${t.icon}  ${t.text}`);
+  }
+}
+
 export function printHelp(): void {
   console.log(`zai-usage ${VERSION} — Z.ai GLM Coding Plan usage CLI
 
@@ -763,10 +1042,13 @@ Modes:
   codingplan-benefits  lifetime plan value at a glance: scans all billing months,
                        prints list value used vs what you paid, plan-covered %,
                        cache savings, biggest month (alias: benefits; --since YYYY-MM)
+  week                 last 7 days vs prior 7 — deltas, behavioral metrics, tips
+  month                month-to-date vs same span last month — deltas + tips
 
 Flags:
   --json               machine-readable output (any mode)
   --demo               synthetic fixtures, no API key needed (any mode)
+  --no-ai              week/month: rule-based tips instead of the default AI coach
   --color              force ANSI color even when piped
   --tz <IANA zone>     display timezone (default: system local, or TZ env)
   --window <name>      check window: 5h | monthly-tools | weekly (default: 5h)
@@ -828,6 +1110,8 @@ export async function main() {
     await getBill();
   } else if (args[0] === "codingplan-benefits" || args[0] === "benefits") {
     await getBenefits();
+  } else if (args[0] === "week" || args[0] === "month") {
+    await getInsights(args[0] as Kind);
   } else if (args[0] === "check") {
     await runCheck();
   } else {

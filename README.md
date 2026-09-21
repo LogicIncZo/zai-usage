@@ -101,6 +101,22 @@ the same usage would have cost without the plan — so "plan-covered" shows the 
 your subscription absorbs and "cache savings" shows what prompt-cache pricing saves
 against input list. (Synthetic `--demo` data above.)
 
+#### `week` / `month` — behavioral review (v0.7.0)
+
+```bash
+zai-usage week              # last 7 days vs prior 7 + tips (AI coach, default)
+zai-usage month             # month-to-date vs same span last month + tips
+zai-usage week --no-ai      # deterministic tips only, no tokens spent
+zai-usage week --ai model   # choose the coach model (default glm-5.3-flash)
+```
+
+Eight deterministic tip rules (pack expiry, peak-window burn, cache-share drop,
+premium-model drift, many-small-turns, single-day concentration, output spike,
+month pace) run first; the AI coach then reads the same aggregate metrics plus
+the fired tips and writes a 2–3 sentence verdict + up to 3 actions. Aggregate
+metrics only are sent — never prompts or code. AI costs ~2K tokens of your
+quota (cached input); `--no-ai` stays deterministic and free.
+
 #### `codingplan-benefits` — lifetime plan value at a glance
 
 Scans every billing month (from 2025-01; `--since YYYY-MM` overrides) and prints the
@@ -219,7 +235,7 @@ plan deduction) — chart real spend and "what this would cost retail" side by s
 ### Tests
 
 ```bash
-bun test        # 34 unit tests — no API key needed (pure functions + demo fixtures)
+bun test        # 42 unit tests — no API key needed (pure functions + demo fixtures)
 ```
 
 ## What it reports
