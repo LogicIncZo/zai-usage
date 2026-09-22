@@ -4,7 +4,7 @@ const KEY = process.env.GLM_API_KEY || process.env.ZAI_API_KEY || process.env.Z_
 
 const BASE = "https://api.z.ai/api/monitor/usage";
 const RESETS_URL = "https://api.z.ai/api/biz/customer-package-reset/list?targetType=PERSONAL";
-export const VERSION = "0.8.0";
+export const VERSION = "0.8.1";
 const args = process.argv.slice(2);
 const jsonOut = args.includes("--json");
 const DEMO = args.includes("--demo");
@@ -732,6 +732,7 @@ async function gatherBenefits(since: string): Promise<{ customerId: string | nul
 async function getBenefits() {
   const si = args.indexOf("--since");
   const since = si > -1 && /^\d{4}-\d{2}$/.test(args[si + 1] || "") ? args[si + 1] : BENEFITS_SCAN_START;
+  const { customerId, perMonth } = await gatherBenefits(since);
   const sum = benefitsSummary(perMonth);
   if (jsonOut) {
     console.log(JSON.stringify({ fetchedAt: new Date().toISOString(), customerId, scanStart: since, benefits: sum }, null, 2));

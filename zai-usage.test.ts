@@ -407,3 +407,19 @@ describe("v0.8 additions", () => {
     expect(one.bestMonth?.period).toBe("2026-09");
   });
 });
+
+describe("mode smoke (spawn, demo)", () => {
+  const run = (argv: string[]) => {
+    const p = Bun.spawnSync(["bun", "zai-usage.ts", ...argv], { cwd: import.meta.dir });
+    return { code: p.exitCode, out: p.stdout.toString() };
+  };
+  test("benefits --demo --json exits 0 and parses (guards perMonth regression)", () => {
+    const r = run(["benefits", "--demo", "--json"]);
+    expect(r.code).toBe(0);
+    const d = JSON.parse(r.out);
+    expect(d.benefits.months).toBeGreaterThan(0);
+  });
+  test("codingplan-benefits --demo exits 0", () => {
+    expect(run(["codingplan-benefits", "--demo"]).code).toBe(0);
+  });
+});
