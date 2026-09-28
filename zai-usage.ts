@@ -221,7 +221,8 @@ export function rel(ms: number): string {
   return mins >= 0 ? `in ${span}` : `${span} ago`;
 }
 
-function resetAt(ms: number): string {
+export function resetAt(ms: number): string {
+  if (!ms || !isFinite(ms)) return "rolling window";
   return `${fmtIST(ms)} ${tzShort(TZ, ms)} (${rel(ms)})`;
 }
 
