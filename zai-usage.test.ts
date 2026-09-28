@@ -4,7 +4,7 @@ import {
   fmtWhen, tzShort, pickTZ, renderTable, demoQuota, demoResets, demoModelUsage, checkDecision,
   billCustomerId, extractCustomerId, prevPeriod, nextPeriod, billInsights, benefitsSummary, rowListCost, demoBillRows,
   demoRowsScaled, learnPrices,
-  z8Day, spansFor, describePeriod, buildTips, demoRowsScaled } from "./zai-usage.ts";
+  z8Day, spansFor, describePeriod, buildTips, demoRowsScaled, resetAt } from "./zai-usage.ts";
 
 describe("humanTokens", () => {
   test("formats by magnitude", () => {
@@ -78,6 +78,27 @@ describe("fmtWhen / tzShort", () => {
   test("tz short name", () => {
     expect(tzShort("UTC", ms)).toBe("UTC");
     expect(tzShort("Asia/Kolkata", ms)).toMatch(/IST|GMT\+5:30/);
+  });
+});
+
+describe("resetAt (guards missing nextResetTime — rolling 5h window)", () => {
+  const ms = Date.UTC(2026, 8, 10, 3, 45, 0); // 03:45Z
+  test("missing / invalid reset time no longer throws (RangeError regression)", () => {
+    // Live API stopped sending nextResetTime on the 5h limit → resetAt(undefined)
+    // used to throw "date value is not finite in DateTimeFormat format()".
+    expect(() => resetAt(undefined)).not.toThrow();
+    expect(() => resetAt(null)).not.toThrow();
+    expect(() => resetAt(NaN)).not.toThrow();
+    expect(() => resetAt(0)).not.toThrow();
+    expect(resetAt(undefined)).toBe("rolling window");
+    expect(resetAt(NaN)).toBe("rolling window");
+  });
+  test("still renders the reset instant when present", () => {
+    const out = resetAt(ms);
+    expect(out).not.toBe("rolling window");
+    // rel() always yields "in …" or "… ago" regardless of zone — TZ-independent.
+    expect(out).toMatch(/(in | )\d+m?/);
+    expect(out).toContain("(");
   });
 });
 
