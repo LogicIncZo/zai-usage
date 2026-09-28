@@ -4,7 +4,8 @@ import {
   fmtWhen, tzShort, pickTZ, renderTable, demoQuota, demoResets, demoModelUsage, checkDecision,
   billCustomerId, extractCustomerId, prevPeriod, nextPeriod, billInsights, benefitsSummary, rowListCost, demoBillRows,
   demoRowsScaled, learnPrices,
-  z8Day, spansFor, describePeriod, buildTips, demoRowsScaled } from "./zai-usage.ts";
+  z8Day, spansFor, describePeriod, buildTips, demoRowsScaled,
+  perModelWindowTokens } from "./zai-usage.ts";
 
 describe("humanTokens", () => {
   test("formats by magnitude", () => {
@@ -141,6 +142,47 @@ describe("demo fixtures", () => {
     expect(d.totalUsage.totalTokensUsage).toBeGreaterThan(0);
     expect(d.modelSummaryList.length).toBeGreaterThan(0);
     expect(d.modelSummaryList[0].totalTokens).toBeGreaterThan(0);
+  });
+  test("demo fixtures are self-consistent: series sums match summary totals", () => {
+    const d = demoModelUsage("2026-09-28 20:03:56", "2026-09-28 20:25:50").data;
+    const seriesSum = (m: any) => m.tokensUsage.reduce((a: number, b: number) => a + b, 0);
+    const perModel = perModelWindowTokens(d);
+    const sum = perModel.reduce((s, m) => s + m.tok, 0);
+    expect(Math.round(sum)).toBe(Math.round(d.totalUsage.totalTokensUsage));
+    d.modelDataList.forEach((m: any, i: number) => {
+      expect(Math.round(perModel[i].tok)).toBe(Math.round(seriesSum(m)));
+      expect(Math.round(m.totalTokens)).toBe(Math.round(seriesSum(m)));
+    });
+  });
+});
+
+describe("perModelWindowTokens", () => {
+  test("prefers window-scoped modelDataList series over day-scoped modelSummaryList", () => {
+    // Reproduces the live API quirk behind the 0.8.2 fix: modelSummaryList
+    // reports day-scale totals even for a 22-minute 5h-quota window.
+    const u = {
+      totalUsage: {
+        totalTokensUsage: 4_595_330,
+        modelSummaryList: [
+          { modelName: "GLM-5.3-Flash", totalTokens: 107_031_189, sortOrder: 1 },
+          { modelName: "GLM-5.3-FlashX", totalTokens: 22_907_905, sortOrder: 2 },
+        ],
+      },
+      modelDataList: [
+        { modelName: "GLM-5.3-Flash", tokensUsage: [4_000_000, 595_330] },
+        { modelName: "GLM-5.3-FlashX", tokensUsage: [0, 0] },
+      ],
+    };
+    const per = perModelWindowTokens(u);
+    expect(per).toEqual([
+      { name: "GLM-5.3-Flash", tok: 4_595_330 },
+      { name: "GLM-5.3-FlashX", tok: 0 },
+    ]);
+  });
+  test("falls back to modelSummaryList when modelDataList is absent", () => {
+    const u = { totalUsage: { modelSummaryList: [{ modelName: "M", totalTokens: 7 }] } };
+    expect(perModelWindowTokens(u)).toEqual([{ name: "M", tok: 7 }]);
+    expect(perModelWindowTokens(null)).toEqual([]);
   });
 });
 

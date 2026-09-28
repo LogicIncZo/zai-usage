@@ -4,7 +4,7 @@ const KEY = process.env.GLM_API_KEY || process.env.ZAI_API_KEY || process.env.Z_
 
 const BASE = "https://api.z.ai/api/monitor/usage";
 const RESETS_URL = "https://api.z.ai/api/biz/customer-package-reset/list?targetType=PERSONAL";
-export const VERSION = "0.8.1";
+export const VERSION = "0.8.2";
 const args = process.argv.slice(2);
 const jsonOut = args.includes("--json");
 const DEMO = args.includes("--demo");
@@ -108,17 +108,22 @@ export function demoModelUsage(from: string, to: string): any {
     tokens.push(r3(1.9e9 / (hourly ? 24 : 1) * (0.8 + 0.4 * ((t / step) % 7) / 6)));
     calls.push(Math.round(860 / (hourly ? 24 : 1) * (0.8 + 0.4 * ((t / step) % 7) / 6)));
   }
+  const shareBase = DEMO_RATES.reduce((s, [, tpd]) => s + tpd, 0);
+  const perModel = list.map((m, i) => {
+    const series = tokens.map((v) => r3(v * (DEMO_RATES[i][1] / shareBase)));
+    return { modelName: m.modelName, sortOrder: m.sortOrder, series, sum: series.reduce((s, v) => s + v, 0) };
+  });
   return {
     code: 200, success: true,
     data: {
       x_time: xTime, modelCallCount: calls, tokensUsage: tokens,
       totalUsage: {
         totalModelCallCount: list.reduce((s, m) => s + m.calls, 0),
-        totalTokensUsage: r3(list.reduce((s, m) => s + m.totalTokens, 0) * 0.96),
-        modelSummaryList: list.map(({ modelName, totalTokens, sortOrder }) => ({ modelName, totalTokens, sortOrder })),
+        totalTokensUsage: perModel.reduce((s, m) => s + m.sum, 0),
+        modelSummaryList: perModel.map(({ modelName, sum, sortOrder }) => ({ modelName, totalTokens: sum, sortOrder })),
       },
-      modelDataList: list.map((m) => ({ modelName: m.modelName, sortOrder: m.sortOrder, tokensUsage: tokens, totalTokens: m.totalTokens })),
-      modelSummaryList: list.map(({ modelName, totalTokens, sortOrder }) => ({ modelName, totalTokens, sortOrder })),
+      modelDataList: perModel.map(({ modelName, sortOrder, series, sum }) => ({ modelName, sortOrder, tokensUsage: series, totalTokens: sum })),
+      modelSummaryList: perModel.map(({ modelName, sum, sortOrder }) => ({ modelName, totalTokens: sum, sortOrder })),
       granularity: hourly ? "hourly" : "daily",
     },
   };
@@ -344,10 +349,8 @@ async function getModelUsage() {
   console.log(`Model usage ${from} → ${to} (${d.granularity}, UTC+8 buckets)`);
   const total = d.totalUsage || {};
   console.log(`Total: ${(total.totalModelCallCount ?? 0).toLocaleString("en-US")} calls · ${humanTokens(total.totalTokensUsage ?? 0)} tokens`);
-  if (total.modelSummaryList?.length) {
-    for (const m of total.modelSummaryList) {
-      console.log(`  ${m.modelName}: ${humanTokens(m.totalTokens)} tokens`);
-    }
+  for (const m of perModelWindowTokens(d)) {
+    console.log(`  ${m.name}: ${humanTokens(m.tok)} tokens`);
   }
   console.log("");
   const maxTok = Math.max(1, ...tokens);
@@ -364,6 +367,20 @@ export function startOfMonthUTC8(now: Date): Date {
       .formatToParts(now).map((x) => [x.type, x.value])
   );
   return new Date(Date.UTC(+g.year, +g.month - 1, 1, -8, 0, 0));
+}
+
+// Per-model tokens inside a requested window. The API's modelSummaryList /
+// totalTokens fields stay day-scoped no matter what range you ask for, so the
+// only window-scoped source is the per-model bucket series (modelDataList).
+export function perModelWindowTokens(u: any): Array<{ name: string; tok: number }> {
+  const series: any[] = u?.modelDataList || [];
+  if (series.length) {
+    return series.map((m) => ({
+      name: m.modelName,
+      tok: (m.tokensUsage || []).reduce((s: number, v: any) => s + (Number(v) || 0), 0),
+    }));
+  }
+  return (u?.totalUsage?.modelSummaryList || []).map((m: any) => ({ name: m.modelName, tok: Number(m.totalTokens) || 0 }));
 }
 
 const WINDOWS: Array<[string, number | "calMonth"]> = [
@@ -412,16 +429,16 @@ async function getSummary() {
   // Model usage matrix: models x windows
   console.log(bold("MODEL USAGE") + dim("  (5h quota window · rolling windows · current month · UTC+8 · tokens with % share)"));
   const winMaps = usages.map((u) => {
-    const list: any[] = u.totalUsage?.modelSummaryList || [];
-    const sum = list.reduce((s, m) => s + m.totalTokens, 0);
-    return new Map(list.map((m) => [m.modelName, { tok: m.totalTokens, pct: sum ? Math.round((m.totalTokens / sum) * 100) : 0 }]));
+    const per = perModelWindowTokens(u);
+    const sum = per.reduce((s, m) => s + m.tok, 0);
+    return new Map(per.map((m) => [m.name, { tok: m.tok, pct: sum ? Math.round((m.tok / sum) * 100) : 0 }]));
   });
   const monthTok = winMaps[winDefs.findIndex(([l]) => l === "Month (30d)")];
   const allModels = [...new Set(winMaps.flatMap((m) => [...m.keys()]))]
     .sort((a, b) => (monthTok.get(b)?.tok ?? 0) - (monthTok.get(a)?.tok ?? 0) || a.localeCompare(b));
   const cell = (i: number, name: string) => {
     const mm = winMaps[i].get(name);
-    return mm ? `${humanTokens(mm.tok)} ${String(mm.pct).padStart(3)}%` : dim("-");
+    return mm && mm.tok > 0 ? `${humanTokens(mm.tok)} ${String(mm.pct).padStart(3)}%` : dim("-");
   };
   const headers = ["model", ...winDefs.map(([l]) => l)];
   const rows: string[][] = allModels.map((name) => [name, ...winDefs.map((_, i) => cell(i, name))]);
@@ -1248,11 +1265,17 @@ export function runwayDetails(quota: any, resets: any, now = Date.now()): Array<
   const f5 = limits.find((l: any) => l.unit === 3);
   if (f5) {
     const pct = Number(f5.percentage) || 0;
+    const leftH = Number(f5.nextResetTime) ? Math.max(0, (Number(f5.nextResetTime) - now) / 3_600_000) : null;
     const last = rd.lastFiveHourResetTime ? parseZ8(rd.lastFiveHourResetTime).getTime() : null;
-    const into = last ? Math.min(5, Math.max(0.25, (now - last) / 3_600_000)) : 2.5;
+    const into = leftH != null
+      ? Math.min(5, Math.max(0.25, 5 - leftH))
+      : last ? Math.min(5, Math.max(0.25, (now - last) / 3_600_000)) : 2.5;
     const eta = etaHours(pct, into, 5);
-    const etaTxt = eta == null ? "no burn detected" : eta <= 0.02 ? "exhausted — waiting on reset" : `100% in ~${eta.toFixed(1)}h at this pace`;
-    out.push({ name: "5h window", used: `${pct}%`, detail: `${etaTxt} · resets ${rel(Number(f5.nextResetTime))}`, risk: eta != null && eta <= 1 ? "warn" : "ok" });
+    const etaTxt = eta == null ? "no burn detected"
+      : eta <= 0.02 ? "exhausted — waiting on reset"
+      : leftH != null && eta >= leftH ? "lasts the window"
+      : `100% in ~${eta.toFixed(1)}h at this pace`;
+    out.push({ name: "5h window", used: `${pct}%`, detail: `${etaTxt} · resets ${rel(Number(f5.nextResetTime))}`, risk: eta != null && eta <= 1 && (leftH == null || eta < leftH) ? "warn" : "ok" });
   }
   const wk = limits.find((l: any) => l.unit === 6);
   if (wk) {
