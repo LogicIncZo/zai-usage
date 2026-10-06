@@ -204,19 +204,28 @@ async function api(url: string): Promise<any> {
   return body;
 }
 
+export function toFiniteMs(v: unknown): number | null {
+  const n = typeof v === "string" && v.trim() !== "" ? Number(v) : (v as number);
+  return typeof n === "number" && Number.isFinite(n) ? n : null;
+}
+
 export function fmtWhen(ms: number, tz: string, weekday = true): string {
-  return new Intl.DateTimeFormat("en-IN", {
-    timeZone: tz,
-    ...(weekday ? { weekday: "short" } : {}),
-    day: "2-digit", month: "short",
-    hour: "2-digit", minute: "2-digit", hour12: false,
-  }).format(new Date(ms));
+  if (!Number.isFinite(ms)) return "unknown";
+  try {
+    return new Intl.DateTimeFormat("en-IN", {
+      timeZone: tz,
+      ...(weekday ? { weekday: "short" } : {}),
+      day: "2-digit", month: "short",
+      hour: "2-digit", minute: "2-digit", hour12: false,
+    }).format(new Date(ms));
+  } catch { return "unknown"; }
 }
 function fmtIST(ms: number, weekday = true): string {
   return fmtWhen(ms, TZ, weekday);
 }
 
 export function rel(ms: number): string {
+  if (!Number.isFinite(ms)) return "unknown";
   const mins = Math.round((ms - Date.now()) / 60000);
   const a = Math.abs(mins);
   const span =
@@ -226,8 +235,10 @@ export function rel(ms: number): string {
   return mins >= 0 ? `in ${span}` : `${span} ago`;
 }
 
-function resetAt(ms: number): string {
-  return `${fmtIST(ms)} ${tzShort(TZ, ms)} (${rel(ms)})`;
+export function resetAt(ms: number): string {
+  const t = toFiniteMs(ms);
+  if (t === null) return "unknown";
+  return `${fmtIST(t)} ${tzShort(TZ, t)} (${rel(t)})`;
 }
 
 export function humanTokens(n: number): string {

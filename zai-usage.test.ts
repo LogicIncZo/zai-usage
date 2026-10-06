@@ -2,6 +2,7 @@ import { describe, test, expect } from "bun:test";
 import {
   humanTokens, bar, z8Stamp, parseZ8, startOfMonthUTC8, inPeakWindow,
   fmtWhen, tzShort, pickTZ, renderTable, demoQuota, demoResets, demoModelUsage, checkDecision,
+  rel, resetAt, toFiniteMs,
   billCustomerId, extractCustomerId, prevPeriod, nextPeriod, billInsights, benefitsSummary, rowListCost, demoBillRows,
   demoRowsScaled, learnPrices,
   z8Day, spansFor, describePeriod, buildTips, demoRowsScaled,
@@ -93,6 +94,42 @@ describe("pickTZ", () => {
   test("invalid zones fall back to UTC", () => {
     expect(pickTZ("Bogus/Zone", "UTC")).toBe("UTC");
     expect(pickTZ(undefined, "Not/AZone")).toBe("UTC");
+  });
+});
+
+describe("defensive timestamp rendering (null/undefined nextResetTime)", () => {
+  test("toFiniteMs coerces numbers and numeric strings, rejects the rest", () => {
+    expect(toFiniteMs(1_760_000_000_000)).toBe(1_760_000_000_000);
+    expect(toFiniteMs("1760000000000")).toBe(1_760_000_000_000);
+    expect(toFiniteMs(null)).toBe(null);
+    expect(toFiniteMs(undefined)).toBe(null);
+    expect(toFiniteMs(NaN)).toBe(null);
+    expect(toFiniteMs(Infinity)).toBe(null);
+    expect(toFiniteMs("")).toBe(null);
+    expect(toFiniteMs("not-a-number")).toBe(null);
+  });
+  test("fmtWhen never throws on non-finite input", () => {
+    expect(fmtWhen(NaN, "UTC")).toBe("unknown");
+    expect(fmtWhen(undefined as any, "UTC")).toBe("unknown");
+    expect(fmtWhen(Infinity, "UTC")).toBe("unknown");
+  });
+  test("rel never throws on non-finite input", () => {
+    expect(rel(NaN)).toBe("unknown");
+    expect(rel(undefined as any)).toBe("unknown");
+  });
+  test("resetAt renders 'unknown' for missing nextResetTime (regression: RangeError crash)", () => {
+    expect(resetAt(null as any)).toBe("unknown");
+    expect(resetAt(undefined as any)).toBe("unknown");
+    expect(resetAt(NaN)).toBe("unknown");
+  });
+  test("resetAt still renders real timestamps", () => {
+    const ms = Date.UTC(2026, 8, 10, 3, 45, 0);
+    expect(resetAt(ms)).toContain("03:45");
+    expect(resetAt(ms)).toMatch(/\((in |.* ago)/);
+  });
+  test("quota payload with null nextResetTime does not crash fiveHourBarLine", () => {
+    const limits = [{ unit: 3, percentage: 47, nextResetTime: null }];
+    expect(() => resetAt(limits[0].nextResetTime)).not.toThrow();
   });
 });
 
