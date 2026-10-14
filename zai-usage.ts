@@ -391,13 +391,18 @@ const WINDOWS: Array<[string, number | "calMonth"]> = [
   ["Current month", "calMonth"],
 ];
 
+export function fiveHourWindowStart(nextResetTime: unknown, now: Date): Date {
+  const reset = nextResetTime == null || nextResetTime === "" ? NaN : Number(nextResetTime);
+  return Number.isFinite(reset) && reset > 0
+    ? new Date(Math.min(reset - 5 * 3600_000, now.getTime()))
+    : new Date(now.getTime() - 5 * 3600_000);
+}
+
 async function getSummary() {
   const now = new Date();
   const quota = await api(`${BASE}/quota/limit`);
   const five = (quota.data.limits || []).find((x: any) => x.unit === 3);
-  const fiveStart = five?.nextResetTime
-    ? new Date(Math.min(five.nextResetTime - 5 * 3600_000, now.getTime()))
-    : new Date(now.getTime() - 5 * 3600_000);
+  const fiveStart = fiveHourWindowStart(five?.nextResetTime, now);
   const winDefs: Array<[string, Date]> = [
     ["5h Quota", fiveStart],
     ...WINDOWS.map(([label, spec]) => [

@@ -5,7 +5,7 @@ import {
   billCustomerId, extractCustomerId, prevPeriod, nextPeriod, billInsights, benefitsSummary, rowListCost, demoBillRows,
   demoRowsScaled, learnPrices,
   z8Day, spansFor, describePeriod, buildTips, demoRowsScaled,
-  perModelWindowTokens } from "./zai-usage.ts";
+  perModelWindowTokens, fiveHourWindowStart } from "./zai-usage.ts";
 
 describe("humanTokens", () => {
   test("formats by magnitude", () => {
@@ -79,6 +79,24 @@ describe("fmtWhen / tzShort", () => {
   test("tz short name", () => {
     expect(tzShort("UTC", ms)).toBe("UTC");
     expect(tzShort("Asia/Kolkata", ms)).toMatch(/IST|GMT\+5:30/);
+  });
+});
+
+describe("fiveHourWindowStart", () => {
+  const now = new Date(Date.UTC(2026, 8, 10, 12, 0, 0));
+  const fallback = now.getTime() - 5 * 3600_000;
+  test("derives start from nextResetTime (number or numeric string)", () => {
+    const reset = now.getTime() + 2 * 3600_000;
+    expect(fiveHourWindowStart(reset, now).getTime()).toBe(reset - 5 * 3600_000);
+    expect(fiveHourWindowStart(String(reset), now).getTime()).toBe(reset - 5 * 3600_000);
+  });
+  test("never starts after now", () => {
+    expect(fiveHourWindowStart(now.getTime() + 6 * 3600_000, now).getTime()).toBe(now.getTime());
+  });
+  test("falls back to now-5h on missing/invalid nextResetTime instead of an Invalid Date", () => {
+    for (const v of [undefined, null, 0, "", "not-a-number", NaN, Infinity]) {
+      expect(fiveHourWindowStart(v, now).getTime()).toBe(fallback);
+    }
   });
 });
 
